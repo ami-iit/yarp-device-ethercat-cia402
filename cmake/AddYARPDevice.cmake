@@ -4,15 +4,14 @@
 
 function(add_yarp_device)
   set(options )
-  set(oneValueArgs NAME)
+  set(oneValueArgs NAME CONFIGURE_PACKAGE_NAME)
   set(multiValueArgs
     SOURCES
     PUBLIC_HEADERS
     PRIVATE_HEADERS
     PUBLIC_LINK_LIBRARIES
     PRIVATE_LINK_LIBRARIES
-    TYPE
-    CONFIGURE_PACKAGE_NAME)
+    TYPE)
 
   set(prefix "yarp")
 
