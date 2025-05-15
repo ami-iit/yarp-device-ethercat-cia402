@@ -7,9 +7,7 @@
 #include <yarp/os/Value.h>
 
 // SOEM
-extern "C" {
 #include "ethercat.h"
-}
 
 //---------------------------------------------------------------
 // ctor / dtor
