@@ -11,4 +11,4 @@ add_yarp_device(
       YARP::YARP_os
       YARP::YARP_dev
       soem
-    CONFIGURE_PACKAGE_NAME ds402_motion_control)
+    CONFIGURE_PACKAGE_NAME Ds402MotionControl)
