@@ -1,7 +1,5 @@
-// -*- mode:C++; c-basic-offset:4; indent-tabs-mode:nil; tab-width:4 -*-
-//  Copyright (C) 2025 Istituto Italiano di Tecnologia (IIT). All rights reserved.
-// This software may be modified and distributed under the terms of the
-// BSD-3-Clause license.
+// SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "Ds402MotionControl.h"
 
