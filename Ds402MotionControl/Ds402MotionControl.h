@@ -25,10 +25,10 @@ class Ds402MotionControl : public DeviceDriver, public yarp::os::PeriodicThread
 public:
     explicit Ds402MotionControl(double period,
                                 yarp::os::ShouldUseSystemClock useSystemClock
-                                = yarp::os::ShouldUseSystemClock::No);
+                                = yarp::os::ShouldUseSystemClock::Yes);
     Ds402MotionControl();
 
-    ~Ds402MotionControl() override = default;
+    ~Ds402MotionControl() override;
 
     // ---------------- DeviceDriver ----------------
     bool open(yarp::os::Searchable& config) override;
@@ -36,6 +36,10 @@ public:
 
     // ---------------- PeriodicThread --------------
     void run() override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace dev
