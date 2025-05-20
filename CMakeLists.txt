@@ -67,7 +67,10 @@ find_package(soem REQUIRED)
 
 # macro to automatize the process of creating a YARP device
 include(AddYARPDevice)
+include(AddApplication)
 
 add_subdirectory(Ds402MotionControl)
+
+add_subdirectory(test)
 
 include(AddUninstallTarget)
