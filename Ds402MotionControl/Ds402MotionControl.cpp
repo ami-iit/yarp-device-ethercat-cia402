@@ -499,8 +499,6 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
-    m_impl->fillJointNames(); // fill the joint names
-
     // print the SDO parameters
 
     //  9. Start the PeriodicThread (this object) → real-time loop
@@ -513,6 +511,8 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 
     // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
+
+    m_impl->fillJointNames(); // fill the joint names
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
