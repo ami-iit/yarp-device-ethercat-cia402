@@ -962,7 +962,7 @@ bool Ds402MotionControl::getAxisName(int j, std::string& name)
     }
 
     // We assume that the name is already filled in the open() method and does not change
-    // during the lifetime of the objectt. For this reason we do not need to lock the mutex
+    // during the lifetime of the object. For this reason we do not need to lock the mutex
     // here.
     name = m_impl->variables.jointNames[j];
     return true;
