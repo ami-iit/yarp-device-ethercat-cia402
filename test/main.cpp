@@ -104,7 +104,7 @@ int main(int argc, char* argv[])
     int numAxes = 0;
     if (!encodersTimedI->getAxes(&numAxes) || numAxes <= 0)
     {
-        yError() << "[main] Failed to retrieve the number of motor encoders or invalid value";
+        yError() << "[main] Failed to retrieve the number of joint encoder axes or invalid value";
         return EXIT_FAILURE;
     }
 
