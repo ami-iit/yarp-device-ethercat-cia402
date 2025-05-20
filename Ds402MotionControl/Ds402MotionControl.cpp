@@ -209,13 +209,15 @@ struct Ds402MotionControl::Impl
 //  Ds402MotionControl  —  ctor / dtor
 
 Ds402MotionControl::Ds402MotionControl(double period, yarp::os::ShouldUseSystemClock useSysClock)
-    : yarp::os::PeriodicThread(period, useSysClock)
+    : yarp::os::PeriodicThread(period, useSysClock, yarp::os::PeriodicThreadClock::Absolute)
     , m_impl(std::make_unique<Impl>())
 {
 }
 
 Ds402MotionControl::Ds402MotionControl()
-    : yarp::os::PeriodicThread(0.001 /*1 kHz*/, yarp::os::ShouldUseSystemClock::Yes)
+    : yarp::os::PeriodicThread(0.001 /*1 kHz*/,
+                               yarp::os::ShouldUseSystemClock::Yes,
+                               yarp::os::PeriodicThreadClock::Absolute)
     , m_impl(std::make_unique<Impl>())
 {
 }
