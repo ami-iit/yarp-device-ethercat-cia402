@@ -111,15 +111,31 @@ struct Ds402MotionControl::Impl
     std::vector<double> gearRatio; //  load-revs : motor-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
     std::vector<double> encoderResInverted; // 1 / encoderRes
-    std::mutex RxPDOMutex; // protect the PDOs from concurrent access
 
-    std::vector<double> motorEncoders; // for getMotorEncoders()
-    std::vector<double> motorVelocities; // for getMotorVelocities()
-    std::vector<double> motorAccelerations; // for getMotorAccelerations()
-    std::vector<double> jointPositions; // for getJointPositions()
-    std::vector<double> jointVelocities; // for getJointVelocities()
-    std::vector<double> jointAccelerations; // for getJointAccelerations()
-    std::vector<double> feedbackTime; // feedback time in seconds
+    struct VariablesReadFromMotors
+    {
+        std::mutex mutex; // protect the PDOs from concurrent access
+        std::vector<double> motorEncoders; // for getMotorEncoders()
+        std::vector<double> motorVelocities; // for getMotorVelocities()
+        std::vector<double> motorAccelerations; // for getMotorAccelerations()
+        std::vector<double> jointPositions; // for getJointPositions()
+        std::vector<double> jointVelocities; // for getJointVelocities()
+        std::vector<double> jointAccelerations; // for getJointAccelerations()
+        std::vector<double> feedbackTime; // feedback time in seconds
+
+        void resizeContainers(std::size_t numAxes)
+        {
+            this->motorEncoders.resize(numAxes);
+            this->motorVelocities.resize(numAxes);
+            this->motorAccelerations.resize(numAxes);
+            this->feedbackTime.resize(numAxes);
+            this->jointPositions.resize(numAxes);
+            this->jointVelocities.resize(numAxes);
+            this->jointAccelerations.resize(numAxes);
+        }
+    };
+
+    VariablesReadFromMotors variables;
 
     bool opRequested{false}; // true after the first run() call
 
@@ -296,21 +312,10 @@ struct Ds402MotionControl::Impl
         return true;
     }
 
-    void resizeContainers()
-    {
-        this->motorEncoders.resize(numAxes);
-        this->motorVelocities.resize(numAxes);
-        this->motorAccelerations.resize(numAxes);
-        this->feedbackTime.resize(numAxes);
-        this->jointPositions.resize(numAxes);
-        this->jointVelocities.resize(numAxes);
-        this->jointAccelerations.resize(numAxes);
-    }
-
     bool readFeedback()
     {
         // 1. Lock the mutex to protect the PDOs from concurrent access
-        std::lock_guard<std::mutex> lock(RxPDOMutex);
+        std::lock_guard<std::mutex> lock(this->variables.mutex);
 
         // 2. Read & print encoder feedback
         for (size_t j = 0; j < this->numAxes; ++j)
@@ -318,24 +323,27 @@ struct Ds402MotionControl::Impl
             const auto& fb = *(this->tx[j]);
             const double encoderResInv = this->encoderResInverted[j];
 
-            this->motorEncoders[j] = static_cast<double>(fb.PositionValue)
-                                     * encoderResInv // [encoder counts] → [turns]
-                                     * 360.0; // [turns] → [deg]
+            this->variables.motorEncoders[j] = static_cast<double>(fb.PositionValue)
+                                               * encoderResInv // [encoder counts] → [turns]
+                                               * 360.0; // [turns] → [deg]
 
             // we need to convert the rpm to deg/s
-            this->motorVelocities[j] = static_cast<double>(fb.VelocityValue) // rpm
-                                       * RPM_TO_DEG_PER_SEC; // [rpm] → [deg/s]
+            this->variables.motorVelocities[j] = static_cast<double>(fb.VelocityValue) // rpm
+                                                 * RPM_TO_DEG_PER_SEC; // [rpm] → [deg/s]
 
             // the acceleration is not available in the PDO
-            this->motorAccelerations[j] = 0.0;
+            this->variables.motorAccelerations[j] = 0.0;
 
             // TODO we assume that we have only one encoder so the joint position and velocity is
             // computed by using the gear ratio
-            this->jointPositions[j] = this->motorEncoders[j] * this->gearRatioInv[j];
-            this->jointVelocities[j] = this->motorVelocities[j] * this->gearRatioInv[j];
-            this->jointAccelerations[j] = this->motorAccelerations[j] * this->gearRatioInv[j];
+            this->variables.jointPositions[j]
+                = this->variables.motorEncoders[j] * this->gearRatioInv[j];
+            this->variables.jointVelocities[j]
+                = this->variables.motorVelocities[j] * this->gearRatioInv[j];
+            this->variables.jointAccelerations[j]
+                = this->variables.motorAccelerations[j] * this->gearRatioInv[j];
 
-            this->feedbackTime[j]
+            this->variables.feedbackTime[j]
                 = static_cast<double>(fb.Timestamp) * MICROSECONDS_TO_SECONDS; // [μs] → [s]
         }
 
@@ -491,7 +499,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // 10. Resize the containers
-    m_impl->resizeContainers();
+    m_impl->variables.resizeContainers(m_impl->numAxes);
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
@@ -590,7 +598,7 @@ bool Ds402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
     }
 
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
 
         *cpr = static_cast<double>(m_impl->encoderRes[m]);
     }
@@ -622,8 +630,8 @@ bool Ds402MotionControl::getMotorEncoder(int m, double* v)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *v = m_impl->motorEncoders[m];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *v = m_impl->variables.motorEncoders[m];
     }
     return true;
 }
@@ -636,8 +644,8 @@ bool Ds402MotionControl::getMotorEncoders(double* encs)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(encs, m_impl->motorEncoders.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(encs, m_impl->variables.motorEncoders.data(), m_impl->numAxes * sizeof(double));
     }
 
     return true;
@@ -651,9 +659,9 @@ bool Ds402MotionControl::getMotorEncodersTimed(double* encs, double* time)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(encs, m_impl->motorEncoders.data(), m_impl->numAxes * sizeof(double));
-        std::memcpy(time, m_impl->feedbackTime.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(encs, m_impl->variables.motorEncoders.data(), m_impl->numAxes * sizeof(double));
+        std::memcpy(time, m_impl->variables.feedbackTime.data(), m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -671,9 +679,9 @@ bool Ds402MotionControl::getMotorEncoderTimed(int m, double* encs, double* time)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *encs = m_impl->motorEncoders[m];
-        *time = m_impl->feedbackTime[m];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *encs = m_impl->variables.motorEncoders[m];
+        *time = m_impl->variables.feedbackTime[m];
     }
     return true;
 }
@@ -691,8 +699,8 @@ bool Ds402MotionControl::getMotorEncoderSpeed(int m, double* sp)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *sp = m_impl->motorVelocities[m];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *sp = m_impl->variables.motorVelocities[m];
     }
     return true;
 }
@@ -705,8 +713,10 @@ bool Ds402MotionControl::getMotorEncoderSpeeds(double* spds)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(spds, m_impl->motorVelocities.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(spds,
+                    m_impl->variables.motorVelocities.data(),
+                    m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -724,8 +734,8 @@ bool Ds402MotionControl::getMotorEncoderAcceleration(int m, double* acc)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *acc = m_impl->motorAccelerations[m];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *acc = m_impl->variables.motorAccelerations[m];
     }
     return true;
 }
@@ -738,8 +748,10 @@ bool Ds402MotionControl::getMotorEncoderAccelerations(double* accs)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(accs, m_impl->motorAccelerations.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(accs,
+                    m_impl->variables.motorAccelerations.data(),
+                    m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -755,9 +767,11 @@ bool Ds402MotionControl::getEncodersTimed(double* encs, double* time)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(encs, m_impl->jointPositions.data(), m_impl->numAxes * sizeof(double));
-        std::memcpy(time, m_impl->feedbackTime.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(encs,
+                    m_impl->variables.jointPositions.data(),
+                    m_impl->numAxes * sizeof(double));
+        std::memcpy(time, m_impl->variables.feedbackTime.data(), m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -775,9 +789,9 @@ bool Ds402MotionControl::getEncoderTimed(int j, double* encs, double* time)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *encs = m_impl->jointPositions[j];
-        *time = m_impl->feedbackTime[j];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *encs = m_impl->variables.jointPositions[j];
+        *time = m_impl->variables.feedbackTime[j];
     }
     return true;
 }
@@ -830,8 +844,8 @@ bool Ds402MotionControl::getEncoder(int j, double* v)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *v = m_impl->jointPositions[j];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *v = m_impl->variables.jointPositions[j];
     }
     return true;
 }
@@ -844,8 +858,10 @@ bool Ds402MotionControl::getEncoders(double* encs)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(encs, m_impl->jointPositions.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(encs,
+                    m_impl->variables.jointPositions.data(),
+                    m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -863,8 +879,8 @@ bool Ds402MotionControl::getEncoderSpeed(int j, double* sp)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *sp = m_impl->jointVelocities[j];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *sp = m_impl->variables.jointVelocities[j];
     }
     return true;
 }
@@ -877,8 +893,10 @@ bool Ds402MotionControl::getEncoderSpeeds(double* spds)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(spds, m_impl->jointVelocities.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(spds,
+                    m_impl->variables.jointVelocities.data(),
+                    m_impl->numAxes * sizeof(double));
     }
     return true;
 }
@@ -896,8 +914,8 @@ bool Ds402MotionControl::getEncoderAcceleration(int j, double* spds)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        *spds = m_impl->jointAccelerations[j];
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *spds = m_impl->variables.jointAccelerations[j];
     }
     return true;
 }
@@ -910,8 +928,10 @@ bool Ds402MotionControl::getEncoderAccelerations(double* accs)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
-        std::memcpy(accs, m_impl->jointAccelerations.data(), m_impl->numAxes * sizeof(double));
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(accs,
+                    m_impl->variables.jointAccelerations.data(),
+                    m_impl->numAxes * sizeof(double));
     }
     return true;
 }
