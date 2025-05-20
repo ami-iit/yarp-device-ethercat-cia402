@@ -3,6 +3,7 @@
 
 // YARP
 #include <yarp/dev/IMotorEncoders.h>
+#include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/PolyDriverList.h>
 #include <yarp/os/LogStream.h>
 #include <yarp/os/Network.h>
@@ -82,21 +83,32 @@ int main(int argc, char* argv[])
     }
 
     // view the IMotorEncoders interface
-    yarp::dev::IMotorEncoders* motorEncoders = nullptr;
-    if (!driver->view(motorEncoders))
+    yarp::dev::IMotorEncoders* motorEncodersI = nullptr;
+    if (!driver->view(motorEncodersI))
     {
         yError() << "[main] Failed to view IMotorEncoders interface";
         return EXIT_FAILURE;
     }
     yInfo() << "[main] Successfully viewed IMotorEncoders interface";
 
-    // Determine number of axes
-    int numAxes = 0;
-    if (!motorEncoders->getNumberOfMotorEncoders(&numAxes) || numAxes <= 0)
+    // view the IEncodersTimed interface
+    yarp::dev::IEncodersTimed* encodersTimedI = nullptr;
+    if (!driver->view(encodersTimedI))
     {
-        yError() << "[main] Failed to retrieve the number of motor encoders or invalid value";
+        yError() << "[main] Failed to view IEncodersTimed interface";
         return EXIT_FAILURE;
     }
+    yInfo() << "[main] Successfully viewed IEncodersTimed interface";
+
+    // Determine number of axes
+    int numAxes = 0;
+    if (!encodersTimedI->getAxes(&numAxes) || numAxes <= 0)
+    {
+        yError() << "[main] Failed to retrieve the number of joint encoder axes or invalid value";
+        return EXIT_FAILURE;
+    }
+
+    std::vector<double> motorEncoders(numAxes), motorVelocities(numAxes);
     std::vector<double> encoders(numAxes), velocities(numAxes);
 
     // -------------------------------------------------------------------------
@@ -104,15 +116,35 @@ int main(int argc, char* argv[])
     // -------------------------------------------------------------------------
     while (!g_stopRequested.load())
     {
-        if (motorEncoders->getMotorEncoders(encoders.data())
-            && motorEncoders->getMotorEncoderSpeeds(velocities.data()))
+        // read motor encoders
+        if (!motorEncodersI->getMotorEncoders(motorEncoders.data()))
         {
-            yInfo() << "[main] Encoder[0]:" << encoders[0] << "deg | Velocity:" << velocities[0]
-                    << "deg/s";
-        } else
-        {
-            yWarning() << "[main] Failed to read encoders";
+            yError() << "[main] Failed to read motor encoders";
+            break;
         }
+        if (!motorEncodersI->getMotorEncoderSpeeds(motorVelocities.data()))
+        {
+            yError() << "[main] Failed to read motor encoder speeds";
+            break;
+        }
+
+        // read encoders
+        if (!encodersTimedI->getEncoders(encoders.data()))
+        {
+            yError() << "[main] Failed to read encoders";
+            break;
+        }
+        if (!encodersTimedI->getEncoderSpeeds(velocities.data()))
+        {
+            yError() << "[main] Failed to read encoder speeds";
+            break;
+        }
+
+        // print the values
+        yInfo() << "[main] Motor encoders:" << motorEncoders << " deg | "
+                << "Motor velocities:" << motorVelocities << " deg/s | "
+                << "Encoders:" << encoders << " deg | "
+                << "Encoder velocities:" << velocities << " deg/s";
 
         yarp::os::Time::delay(0.01);
     }
