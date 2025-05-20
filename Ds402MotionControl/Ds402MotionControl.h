@@ -4,10 +4,10 @@
 #ifndef YARP_DEV_DS402_MOTION_CONTROL_H
 #define YARP_DEV_DS402_MOTION_CONTROL_H
 
+#include <memory>
 #include <string>
 
 #include <yarp/dev/DeviceDriver.h>
-#include <yarp/os/Log.h>
 #include <yarp/os/PeriodicThread.h>
 
 namespace yarp
@@ -46,13 +46,22 @@ public:
      */
     ~Ds402MotionControl() override;
 
+    // clang-format off
     /**
      * @brief Opens the device driver.
      *
      * @param config The configuration parameters for the driver.
+     * @note The configuration parameters should include:
+     * | Parameter Name         | Type     | Description                                   | Is Mandatory? |
+     * |:----------------------:|:--------:|-----------------------------------------------|:-------------:|
+     * | ifname                 | string   | Name of the network interface to use          | Yes           |
+     * | num_axes               | int      | Number of axes to control                     | Yes           |
+     * | first_slave            | int      | Index of the slave to start from (default: 1) | No            |
+     * | expected_slave_name    | string   | Expected name of the slave                    | No            |
      * @return true if the driver was opened successfully, false otherwise.
      */
     bool open(yarp::os::Searchable& config) override;
+    // clang-format on
 
     /**
      * @brief Closes the device driver.
