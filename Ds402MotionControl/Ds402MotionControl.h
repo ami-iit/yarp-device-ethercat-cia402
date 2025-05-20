@@ -8,6 +8,7 @@
 #include <string>
 
 #include <yarp/dev/DeviceDriver.h>
+#include <yarp/dev/IMotorEncoders.h>
 #include <yarp/os/PeriodicThread.h>
 
 namespace yarp
@@ -20,7 +21,9 @@ namespace dev
  *
  * This class owns the EtherCAT master cycle via yarp::os::PeriodicThread.
  */
-class Ds402MotionControl : public DeviceDriver, public yarp::os::PeriodicThread
+class Ds402MotionControl : public yarp::dev::DeviceDriver,
+                           public yarp::os::PeriodicThread,
+                           public yarp::dev::IMotorEncoders
 {
 public:
     /**
@@ -77,6 +80,121 @@ public:
      * This function is called periodically at the specified interval.
      */
     void run() override;
+
+    // ---------------- IMotorEncoders --------------
+
+    /**
+     * @brief Gets the number of motor encoders.
+     * @param num Pointer to an integer where the number of encoders will be stored.
+     * @return true if successful, false otherwise.
+     */
+    bool getNumberOfMotorEncoders(int* num) override;
+
+    /**
+     * @brief Resets the specified motor encoder to zero.
+     * @param m Index of the motor encoder to reset.
+     * @return true if successful, false otherwise.
+     */
+    bool resetMotorEncoder(int m) override;
+
+    /**
+     * @brief Resets all motor encoders to zero.
+     * @return true if successful, false otherwise.
+     */
+    bool resetMotorEncoders() override;
+
+    /**
+     * @brief Sets the counts per revolution for a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param cpr Counts per revolution value to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setMotorEncoderCountsPerRevolution(int m, const double cpr) override;
+
+    /**
+     * @brief Gets the counts per revolution for a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param cpr Pointer to store the counts per revolution value.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderCountsPerRevolution(int m, double* cpr) override;
+
+    /**
+     * @brief Sets the value of a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param val Value to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setMotorEncoder(int m, const double val) override;
+
+    /**
+     * @brief Sets the values of all motor encoders.
+     * @param vals Array of values to set for each encoder.
+     * @return true if successful, false otherwise.
+     */
+    bool setMotorEncoders(const double* vals) override;
+
+    /**
+     * @brief Gets the value of a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param v Pointer to store the encoder value.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoder(int m, double* v) override;
+
+    /**
+     * @brief Gets the values of all motor encoders.
+     * @param encs Array to store the encoder values.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoders(double* encs) override;
+
+    /**
+     * @brief Gets the values and timestamps of all motor encoders.
+     * @param encs Array to store the encoder values.
+     * @param time Array to store the timestamps.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncodersTimed(double* encs, double* time) override;
+
+    /**
+     * @brief Gets the value and timestamp of a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param encs Pointer to store the encoder value.
+     * @param time Pointer to store the timestamp.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderTimed(int m, double* encs, double* time) override;
+
+    /**
+     * @brief Gets the speed of a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param sp Pointer to store the speed value.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderSpeed(int m, double* sp) override;
+
+    /**
+     * @brief Gets the speeds of all motor encoders.
+     * @param spds Array to store the speed values.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderSpeeds(double* spds) override;
+
+    /**
+     * @brief Gets the acceleration of a specific motor encoder.
+     * @param m Index of the motor encoder.
+     * @param acc Pointer to store the acceleration value.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderAcceleration(int m, double* acc) override;
+
+    /**
+     * @brief Gets the accelerations of all motor encoders.
+     * @param accs Array to store the acceleration values.
+     * @return true if successful, false otherwise.
+     */
+    bool getMotorEncoderAccelerations(double* accs) override;
 
 private:
     struct Impl;
