@@ -8,6 +8,7 @@
 #include <string>
 
 #include <yarp/dev/DeviceDriver.h>
+#include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/os/PeriodicThread.h>
 
@@ -23,7 +24,8 @@ namespace dev
  */
 class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::os::PeriodicThread,
-                           public yarp::dev::IMotorEncoders
+                           public yarp::dev::IMotorEncoders,
+                           public yarp::dev::IEncodersTimed
 {
 public:
     /**
@@ -195,6 +197,105 @@ public:
      * @return true if successful, false otherwise.
      */
     bool getMotorEncoderAccelerations(double* accs) override;
+
+    // ---------------- IEncoderTimed --------------
+
+    /**
+     * @brief Gets the values and timestamps of all encoders.
+     * @param encs Array to store the encoder values.
+     * @param time Array to store the timestamps (in seconds).
+     * @return true if successful, false otherwise.
+     */
+    bool getEncodersTimed(double* encs, double* time) override;
+
+    /**
+     * @brief Gets the value and timestamp of a specific encoder.
+     * @param j Index of the encoder.
+     * @param encs Pointer to store the encoder value.
+     * @param time Pointer to store the timestamp (in seconds).
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoderTimed(int j, double* encs, double* time) override;
+
+    /**
+     * @brief Gets the number of axes (encoders).
+     * @param ax Pointer to store the number of axes.
+     * @return true if successful, false otherwise.
+     */
+    bool getAxes(int* ax) override;
+
+    /**
+     * @brief Resets the specified encoder to zero.
+     * @param j Index of the encoder to reset.
+     * @return true if successful, false otherwise.
+     */
+    bool resetEncoder(int j) override;
+
+    /**
+     * @brief Resets all encoders to zero.
+     * @return true if successful, false otherwise.
+     */
+    bool resetEncoders() override;
+
+    /**
+     * @brief Sets the value of a specific encoder.
+     * @param j Index of the encoder.
+     * @param val Value to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setEncoder(int j, double val) override;
+
+    /**
+     * @brief Sets the values of all encoders.
+     * @param vals Array of values to set for each encoder.
+     * @return true if successful, false otherwise.
+     */
+    bool setEncoders(const double* vals) override;
+
+    /**
+     * @brief Gets the value of a specific encoder.
+     * @param j Index of the encoder.
+     * @param v Pointer to store the encoder value.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoder(int j, double* v) override;
+
+    /**
+     * @brief Gets the values of all encoders.
+     * @param encs Array to store the encoder values.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoders(double* encs) override;
+
+    /**
+     * @brief Gets the speed of a specific encoder.
+     * @param j Index of the encoder.
+     * @param sp Pointer to store the speed value.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoderSpeed(int j, double* sp) override;
+
+    /**
+     * @brief Gets the speeds of all encoders.
+     * @param spds Array to store the speed values.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoderSpeeds(double* spds) override;
+
+    /**
+     * @brief Gets the acceleration of a specific encoder.
+     * @param j Index of the encoder.
+     * @param spds Pointer to store the acceleration value.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoderAcceleration(int j, double* spds) override;
+
+    /**
+     * @brief Gets the accelerations of all encoders.
+     * @param accs Array to store the acceleration values.
+     * @return true if successful, false otherwise.
+     */
+    bool getEncoderAccelerations(double* accs) override;
 
 private:
     struct Impl;

@@ -108,12 +108,17 @@ struct Ds402MotionControl::Impl
     std::vector<RxPDO*> rx; // one ptr per joint → command area
     std::vector<TxPDO*> tx; // one ptr per joint → feedback area
     std::vector<uint32_t> encoderRes; // "counts per revolution" etc.
+    std::vector<double> gearRatio; //  load-revs : motor-revs
+    std::vector<double> gearRatioInv; // 1 / gearRatio
     std::vector<double> encoderResInverted; // 1 / encoderRes
     std::mutex RxPDOMutex; // protect the PDOs from concurrent access
 
     std::vector<double> motorEncoders; // for getMotorEncoders()
     std::vector<double> motorVelocities; // for getMotorVelocities()
     std::vector<double> motorAccelerations; // for getMotorAccelerations()
+    std::vector<double> jointPositions; // for getJointPositions()
+    std::vector<double> jointVelocities; // for getJointVelocities()
+    std::vector<double> jointAccelerations; // for getJointAccelerations()
     std::vector<double> feedbackTime; // feedback time in seconds
 
     bool opRequested{false}; // true after the first run() call
@@ -228,12 +233,78 @@ struct Ds402MotionControl::Impl
         return true;
     }
 
+    /**
+     * Read the gear-ratio (motor-revs : load-revs) for every axis and cache both
+     * the ratio and its inverse.
+     *
+     * 0x6091:01  numerator   (UNSIGNED32, default 1)
+     * 0x6091:02  denominator (UNSIGNED32, default 1)
+     *
+     * If the object is missing or invalid the code silently falls back to 1:1.
+     */
+    bool readGearRatios()
+    {
+        this->gearRatio.resize(numAxes);
+        this->gearRatioInv.resize(numAxes);
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+
+            uint32_t num = 1; // default numerator
+            uint32_t den = 1; // default denominator
+            int sz;
+
+            /* ---- numerator -------------------------------------------------- */
+            sz = sizeof(num);
+            if (ec_SDOread(slaveIdx, 0x6091, 0x01, false, &sz, &num, EC_TIMEOUTRXM) <= 0)
+            {
+                yWarning("Joint %s: gear-ratio numerator not available (0x6091:01) → assume 1",
+                         kClassName.data());
+                num = 1;
+            }
+
+            /* ---- denominator ------------------------------------------------ */
+            sz = sizeof(den);
+            if (ec_SDOread(slaveIdx, 0x6091, 0x02, false, &sz, &den, EC_TIMEOUTRXM) <= 0
+                || den == 0)
+            {
+                yWarning("Joint %s: gear-ratio denominator not available/zero (0x6091:02) → assume "
+                         "1",
+                         kClassName.data());
+                den = 1;
+            }
+
+            yInfo("Joint %s: gear-ratio %zu → %u : %u", kClassName.data(), j, num, den);
+
+            /* ---- cache values ---------------------------------------------- */
+            this->gearRatio[j] = static_cast<double>(num) / static_cast<double>(den);
+        }
+
+        /* Pre-compute 1 / ratio for fast use elsewhere ----------------------- */
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            if (this->gearRatio[j] != 0.0)
+            {
+                this->gearRatioInv[j] = 1.0 / this->gearRatio[j];
+            } else
+            {
+                this->gearRatioInv[j] = 0.0;
+            }
+        }
+
+        return true;
+    }
+
     void resizeContainers()
     {
         this->motorEncoders.resize(numAxes);
         this->motorVelocities.resize(numAxes);
         this->motorAccelerations.resize(numAxes);
         this->feedbackTime.resize(numAxes);
+        this->jointPositions.resize(numAxes);
+        this->jointVelocities.resize(numAxes);
+        this->jointAccelerations.resize(numAxes);
     }
 
     bool readFeedback()
@@ -257,6 +328,13 @@ struct Ds402MotionControl::Impl
 
             // the acceleration is not available in the PDO
             this->motorAccelerations[j] = 0.0;
+
+            // TODO we assume that we have only one encoder so the joint position and velocity is
+            // computed by using the gear ratio
+            this->jointPositions[j] = this->motorEncoders[j] * this->gearRatioInv[j];
+            this->jointVelocities[j] = this->motorVelocities[j] * this->gearRatioInv[j];
+            this->jointAccelerations[j] = this->motorAccelerations[j] * this->gearRatioInv[j];
+
             this->feedbackTime[j]
                 = static_cast<double>(fb.Timestamp) * MICROSECONDS_TO_SECONDS; // [μs] → [s]
         }
@@ -390,12 +468,19 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
-    //  8. Fetch static SDO parameters (encoder resolutions …)
+    //  8. Fetch static SDO parameters (encoder resolutions, gear ratios)
     if (!m_impl->readEncoderResolutions())
     {
         ec_close();
         return false;
     }
+    if (!m_impl->readGearRatios())
+    {
+        ec_close();
+        return false;
+    }
+
+    // print the SDO parameters
 
     //  9. Start the PeriodicThread (this object) → real-time loop
     if (!this->start())
@@ -457,6 +542,10 @@ void Ds402MotionControl::run()
     // 2. Read feedback from the drives --------------------------------------
     m_impl->readFeedback();
 }
+
+// -----------------------------------------------
+// ----------------- IMotorEncoders --------------
+// -----------------------------------------------
 
 bool Ds402MotionControl::getNumberOfMotorEncoders(int* num)
 {
@@ -651,6 +740,178 @@ bool Ds402MotionControl::getMotorEncoderAccelerations(double* accs)
     {
         std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
         std::memcpy(accs, m_impl->motorAccelerations.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+// -----------------------------------------------
+// ----------------- IEncoders  ------------------
+// -----------------------------------------------
+bool Ds402MotionControl::getEncodersTimed(double* encs, double* time)
+{
+    if (encs == nullptr || time == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(encs, m_impl->jointPositions.data(), m_impl->numAxes * sizeof(double));
+        std::memcpy(time, m_impl->feedbackTime.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoderTimed(int j, double* encs, double* time)
+{
+    if (encs == nullptr || time == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *encs = m_impl->jointPositions[j];
+        *time = m_impl->feedbackTime[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getAxes(int* ax)
+{
+    if (ax == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    *ax = static_cast<int>(m_impl->numAxes);
+    return true;
+}
+
+bool Ds402MotionControl::resetEncoder(int j)
+{
+    yError("%s: resetEncoder() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::resetEncoders()
+{
+    yError("%s: resetEncoders() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::setEncoder(int j, const double val)
+{
+    yError("%s: setEncoder() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::setEncoders(const double* vals)
+{
+    yError("%s: setEncoders() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::getEncoder(int j, double* v)
+{
+    if (v == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *v = m_impl->jointPositions[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoders(double* encs)
+{
+    if (encs == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(encs, m_impl->jointPositions.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoderSpeed(int j, double* sp)
+{
+    if (sp == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *sp = m_impl->jointVelocities[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoderSpeeds(double* spds)
+{
+    if (spds == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(spds, m_impl->jointVelocities.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoderAcceleration(int j, double* spds)
+{
+    if (spds == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *spds = m_impl->jointAccelerations[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getEncoderAccelerations(double* accs)
+{
+    if (accs == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(accs, m_impl->jointAccelerations.data(), m_impl->numAxes * sizeof(double));
     }
     return true;
 }
