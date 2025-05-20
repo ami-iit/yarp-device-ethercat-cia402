@@ -29,6 +29,7 @@
 // STD
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,6 +89,7 @@ struct Ds402MotionControl::Impl
     // Constants
     static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // 1 / DEG_PER_SEC_TO_RPM
     static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // 1 / RPM_TO_DEG_PER_SEC
+    static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // 1 / 1'000'000
 
     // SOEM needs one contiguous memory area for every byte that travels on the bus.
     char ioMap[4096] = {0};
@@ -106,6 +108,13 @@ struct Ds402MotionControl::Impl
     std::vector<RxPDO*> rx; // one ptr per joint → command area
     std::vector<TxPDO*> tx; // one ptr per joint → feedback area
     std::vector<uint32_t> encoderRes; // "counts per revolution" etc.
+    std::vector<double> encoderResInverted; // 1 / encoderRes
+    std::mutex RxPDOMutex; // protect the PDOs from concurrent access
+
+    std::vector<double> motorEncoders; // for getMotorEncoders()
+    std::vector<double> motorVelocities; // for getMotorVelocities()
+    std::vector<double> motorAccelerations; // for getMotorAccelerations()
+    std::vector<double> feedbackTime; // feedback time in seconds
 
     bool opRequested{false}; // true after the first run() call
 
@@ -177,6 +186,7 @@ struct Ds402MotionControl::Impl
     bool readEncoderResolutions()
     {
         this->encoderRes.resize(numAxes);
+        this->encoderResInverted.resize(numAxes);
 
         for (size_t j = 0; j < numAxes; ++j)
         {
@@ -202,8 +212,58 @@ struct Ds402MotionControl::Impl
             }
             this->encoderRes[j] = res;
         }
+
+        // 1. Invert the encoder resolutions for later use in getFeedback()
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            if (this->encoderRes[j] != 0)
+            {
+                this->encoderResInverted[j] = 1.0 / static_cast<double>(this->encoderRes[j]);
+            } else
+            {
+                this->encoderResInverted[j] = 0.0;
+            }
+        }
+
         return true;
     }
+
+    void resizeContainers()
+    {
+        this->motorEncoders.resize(numAxes);
+        this->motorVelocities.resize(numAxes);
+        this->motorAccelerations.resize(numAxes);
+        this->feedbackTime.resize(numAxes);
+    }
+
+    bool readFeedback()
+    {
+        // 1. Lock the mutex to protect the PDOs from concurrent access
+        std::lock_guard<std::mutex> lock(RxPDOMutex);
+
+        // 2. Read & print encoder feedback
+        for (size_t j = 0; j < this->numAxes; ++j)
+        {
+            const auto& fb = *(this->tx[j]);
+            const double encoderResInv = this->encoderResInverted[j];
+
+            this->motorEncoders[j] = static_cast<double>(fb.PositionValue)
+                                     * encoderResInv // [encoder counts] → [turns]
+                                     * 360.0; // [turns] → [deg]
+
+            // we need to convert the rpm to deg/s
+            this->motorVelocities[j] = static_cast<double>(fb.VelocityValue) // rpm
+                                       * RPM_TO_DEG_PER_SEC; // [rpm] → [deg/s]
+
+            // the acceleration is not available in the PDO
+            this->motorAccelerations[j] = 0.0;
+            this->feedbackTime[j]
+                = static_cast<double>(fb.Timestamp) * MICROSECONDS_TO_SECONDS; // [μs] → [s]
+        }
+
+        return true;
+    }
+
 }; // struct Impl
 
 //  Ds402MotionControl  —  ctor / dtor
@@ -345,6 +405,9 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
+    // 10. Resize the containers
+    m_impl->resizeContainers();
+
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
           m_impl->numAxes);
@@ -391,26 +454,205 @@ void Ds402MotionControl::run()
         yWarning("%s: WKC %d < expected %d", Impl::kClassName.data(), wkc, m_impl->expectedWkc);
     }
 
-    // 2. Read & print encoder feedback --------------------------------------
-    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    // 2. Read feedback from the drives --------------------------------------
+    m_impl->readFeedback();
+}
+
+bool Ds402MotionControl::getNumberOfMotorEncoders(int* num)
+{
+    if (num == nullptr)
     {
-        const TxPDO* fb = m_impl->tx[j];
-        if (!fb)
-        {
-            continue;
-        }
-
-        double posDeg = 0.0;
-        double velDeg = 0.0;
-        if (m_impl->encoderRes[j] != 0)
-        {
-            posDeg = static_cast<double>(fb->PositionValue) * 360.0 / m_impl->encoderRes[j];
-        }
-        velDeg = static_cast<double>(fb->VelocityValue) * Impl::RPM_TO_DEG_PER_SEC;
-
-        yInfo() << "J" << j << ": Pos " << posDeg << "°  Vel " << velDeg << "°/s  Tq "
-                << fb->TorqueValue << " Nm (to check)";
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
     }
+    *num = static_cast<int>(m_impl->numAxes);
+    return true;
+}
+
+bool Ds402MotionControl::resetMotorEncoder(int m)
+{
+    yError("%s: resetMotorEncoder() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::resetMotorEncoders()
+{
+    yError("%s: resetMotorEncoders() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::setMotorEncoderCountsPerRevolution(int m, const double cpr)
+{
+    yError("%s: setMotorEncoderCountsPerRevolution() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
+{
+    if (cpr == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+
+        *cpr = static_cast<double>(m_impl->encoderRes[m]);
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setMotorEncoder(int m, const double val)
+{
+    yError("%s: setMotorEncoder() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::setMotorEncoders(const double* vals)
+{
+    yError("%s: setMotorEncoders() not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool Ds402MotionControl::getMotorEncoder(int m, double* v)
+{
+    if (v == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *v = m_impl->motorEncoders[m];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoders(double* encs)
+{
+    if (encs == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(encs, m_impl->motorEncoders.data(), m_impl->numAxes * sizeof(double));
+    }
+
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncodersTimed(double* encs, double* time)
+{
+    if (encs == nullptr || time == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(encs, m_impl->motorEncoders.data(), m_impl->numAxes * sizeof(double));
+        std::memcpy(time, m_impl->feedbackTime.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoderTimed(int m, double* encs, double* time)
+{
+    if (encs == nullptr || time == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *encs = m_impl->motorEncoders[m];
+        *time = m_impl->feedbackTime[m];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoderSpeed(int m, double* sp)
+{
+    if (sp == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *sp = m_impl->motorVelocities[m];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoderSpeeds(double* spds)
+{
+    if (spds == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(spds, m_impl->motorVelocities.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoderAcceleration(int m, double* acc)
+{
+    if (acc == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        *acc = m_impl->motorAccelerations[m];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getMotorEncoderAccelerations(double* accs)
+{
+    if (accs == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->RxPDOMutex);
+        std::memcpy(accs, m_impl->motorAccelerations.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
 }
 
 } // namespace yarp::dev
