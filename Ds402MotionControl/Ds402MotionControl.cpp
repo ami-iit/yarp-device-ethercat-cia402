@@ -114,7 +114,7 @@ struct Ds402MotionControl::Impl
 
     struct VariablesReadFromMotors
     {
-        std::mutex mutex; // protect the PDOs from concurrent access
+        std::mutex mutex; // protect the variables in this structure from concurrent access
         std::vector<double> motorEncoders; // for getMotorEncoders()
         std::vector<double> motorVelocities; // for getMotorVelocities()
         std::vector<double> motorAccelerations; // for getMotorAccelerations()
