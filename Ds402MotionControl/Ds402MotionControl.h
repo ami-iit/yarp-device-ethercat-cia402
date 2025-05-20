@@ -12,6 +12,7 @@
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
+#include <yarp/dev/ITorqueControl.h>
 #include <yarp/os/PeriodicThread.h>
 
 namespace yarp
@@ -30,6 +31,7 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::dev::IEncodersTimed,
                            public yarp::dev::IAxisInfo,
                            public yarp::dev::IControlMode
+                        //    public yarp::dev::ITorqueControl
 {
 public:
     /**
@@ -370,6 +372,30 @@ public:
      * @return true if successful, false otherwise.
      */
     bool setControlModes(int* modes) override;
+
+    // ---------------- ITorqueControl --------------
+
+ 
+    //  bool getRefTorques(double *t)override;
+ 
+    //  bool getRefTorque(int j, double *t)override;
+ 
+    //  bool setRefTorques(const double *t)override;
+ 
+    //  bool setRefTorque(int j, double t)override;
+ 
+ 
+    //  bool getMotorTorqueParams(int j,  yarp::dev::MotorTorqueParameters *params) {return false;}
+ 
+    //  bool setMotorTorqueParams(int j,  const yarp::dev::MotorTorqueParameters params) {return false;}
+ 
+    //  bool getTorque(int j, double *t)override;
+ 
+    //  bool getTorques(double *t)override;
+ 
+    //  bool getTorqueRange(int j, double *min, double *max)override;
+ 
+    //  bool getTorqueRanges(double *min, double *max)override;
 
 private:
     struct Impl;

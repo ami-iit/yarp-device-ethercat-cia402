@@ -153,6 +153,16 @@ struct Ds402MotionControl::Impl
     };
     ControlModeState controlModeState;
 
+    /* --------------- CiA-402 power-state machine ------------------------ */
+    enum class CwStage
+    {
+        Ready,
+        NeedShutdown,
+        NeedSwitchOn,
+        NeedEnable
+    };
+    std::vector<CwStage> cwStage;
+
     bool opRequested{false}; // true after the first run() call
 
     Impl() = default;
@@ -384,7 +394,8 @@ struct Ds402MotionControl::Impl
         switch (cm)
         {
         case VOCAB_CM_IDLE:
-            return 0; // No mode / “off”
+        case VOCAB_CM_FORCE_IDLE:
+            return 0; // “No mode” → disables the power stage
         case VOCAB_CM_POSITION:
             return 1; // Profile-Position (PP)
         case VOCAB_CM_VELOCITY:
@@ -573,23 +584,23 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
-    //  9. Start the PeriodicThread (this object) → real-time loop
-    if (!this->start())
-    {
-        yError("%s: failed to start the thread", Impl::kClassName.data());
-        ec_close();
-        return false;
-    }
-
     // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
+    m_impl->cwStage.assign(m_impl->numAxes, Impl::CwStage::Ready);
 
     m_impl->fillJointNames(); // fill the joint names
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
           m_impl->numAxes);
+
+    if (!this->start())
+    {
+        yError("%s: failed to start the thread", Impl::kClassName.data());
+        ec_close();
+        return false;
+    }
 
     return true;
 }
@@ -633,37 +644,70 @@ void Ds402MotionControl::run()
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
             RxPDO* rx = m_impl->rx[j];
-            int desired = m_impl->controlModeState.target[j];
+            const int tgt = m_impl->controlModeState.target[j];
+            Impl::CwStage& st = m_impl->cwStage[j];
 
-            /* Skip if already active (saves bandwidth) */
-            if (desired == m_impl->controlModeState.active[j])
-                continue;
-
-            /* ---------- IDLE (drive disabled) --------------------------- */
-            if (desired == VOCAB_CM_IDLE)
+            /* FORCE-IDLE clears fault and disables power --------------- */
+            if (tgt == VOCAB_CM_FORCE_IDLE)
             {
-                rx->Controlword = 0x0000; // switch-on-disabled
                 rx->OpMode = 0;
-                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
+                rx->Controlword = 0x0080; /* fault-reset */
+                st = Impl::CwStage::Ready;
                 continue;
             }
 
-            /* ---------- Normal CiA-402 modes --------------------------- */
-            int op = Impl::yarpToCiaOp(desired);
+            /* ---------- Normal modes -------------------------------------- */
+            const int op = Impl::yarpToCiaOp(tgt);
             if (op < 0)
             {
                 // unsupported → ignore
                 continue;
             }
 
-            /* Simple “shutdown → switch-on → enable-operation” sequence */
-            rx->Controlword = 0x0006; // shutdown
-            rx->OpMode = static_cast<int8_t>(op);
-            rx->Controlword = 0x000F; // enable-operation
+            /* if already active nothing to do -------------------------- */
+            if (m_impl->controlModeState.active[j] == tgt && st == Impl::CwStage::Ready)
+            {
+                continue;
+            }
 
-            m_impl->controlModeState.active[j] = desired;
+            /* if still Ready but need change of control mode, start from Shutdown ------ */
+            if (st == Impl::CwStage::Ready)
+            {
+                st = Impl::CwStage::NeedShutdown;
+            }
+
+            /* advance one stage per cycle ------------------------------ */
+            switch (st)
+            {
+            case Impl::CwStage::NeedShutdown:
+                if (tgt == VOCAB_CM_IDLE)
+                {
+                    rx->Controlword = 0x0000;
+                    rx->OpMode = 0;
+                    st = Impl::CwStage::Ready;
+                } else
+                {
+                    rx->Controlword = 0x0006;
+                    rx->OpMode = op;
+                    st = Impl::CwStage::NeedSwitchOn;
+                }
+                break;
+
+            case Impl::CwStage::NeedSwitchOn:
+                rx->Controlword = 0x0007;
+                st = Impl::CwStage::NeedEnable;
+                break;
+
+            case Impl::CwStage::NeedEnable:
+                rx->Controlword = 0x000F;
+                st = Impl::CwStage::Ready;
+                break;
+
+            case Impl::CwStage::Ready:
+                break;
+            }
         }
-    } // controlModeState.mutex unlocked here
+    } // mutex unlocked
 
     /* ---------------------------------------------------------------------
      * 2.  CYCLIC EXCHANGE
@@ -675,26 +719,32 @@ void Ds402MotionControl::run()
     {
         yWarning("%s: WKC %d < expected %d", Impl::kClassName.data(), wkc, m_impl->expectedWkc);
     }
+
     /* ---------------------------------------------------------------------
-     * 3.  CHECK FAULT / ENABLE STATUS
+     * 3.  DIAGNOSTICS  (update active[] after we got the Statusword)
      * ------------------------------------------------------------------ */
     {
-        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
-
+        std::lock_guard<std::mutex> lk(m_impl->controlModeState.mutex);
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
-            uint16_t sw = m_impl->tx[j]->Statusword;
+            const uint16_t sw = m_impl->tx[j]->Statusword;
 
-            if (sw & 0x0008) // bit-3 → Fault
+            if (sw & 0x0008) /* Fault */
             {
                 m_impl->controlModeState.active[j] = VOCAB_CM_HW_FAULT;
                 continue;
             }
-            if (!(sw & 0x0004))
+
+            const bool opEnabled = sw & 0x0004;
+            const int echo = Impl::ciaOpToYarp(m_impl->tx[j]->OpModeDisplay);
+
+            if (opEnabled && echo == m_impl->controlModeState.target[j])
             {
-                // bit-2 clear → not enabled
-                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
+                m_impl->controlModeState.active[j] = echo;
             }
+
+            if (!(sw & 0x0001)) /* disabled */
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
         }
     }
 
@@ -1214,7 +1264,6 @@ bool Ds402MotionControl::setControlModes(const int n, const int* joints, int* mo
         yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
         return false;
     }
-
 
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     for (int k = 0; k < n; ++k)
