@@ -114,7 +114,7 @@ struct Ds402MotionControl::Impl
 
     struct VariablesReadFromMotors
     {
-        std::mutex mutex; // protect the variables in this structure from concurrent access
+        mutable std::mutex mutex; // protect the variables in this structure from concurrent access
         std::vector<double> motorEncoders; // for getMotorEncoders()
         std::vector<double> motorVelocities; // for getMotorVelocities()
         std::vector<double> motorAccelerations; // for getMotorAccelerations()
@@ -138,6 +138,20 @@ struct Ds402MotionControl::Impl
     };
 
     VariablesReadFromMotors variables;
+
+    struct ControlModeState
+    {
+        std::vector<int> target; // what the user asked for
+        std::vector<int> active; // what the drive is really doing
+        mutable std::mutex mutex; // protects *both* vectors
+
+        void resize(std::size_t n, int initial = VOCAB_CM_IDLE)
+        {
+            target.assign(n, initial);
+            active = target;
+        }
+    };
+    ControlModeState controlModeState;
 
     bool opRequested{false}; // true after the first run() call
 
@@ -361,6 +375,55 @@ struct Ds402MotionControl::Impl
         return true;
     }
 
+    //--------------------------------------------------------------------------
+    //  YARP ➜ CiA-402   (Op-mode sent in RxPDO::OpMode)
+    //--------------------------------------------------------------------------
+    static int yarpToCiaOp(int cm)
+    {
+        using namespace yarp::dev;
+        switch (cm)
+        {
+        case VOCAB_CM_IDLE:
+            return 0; // No mode / “off”
+        case VOCAB_CM_POSITION:
+            return 1; // Profile-Position (PP)
+        case VOCAB_CM_VELOCITY:
+            return 9; // Cyclic-Synch-Velocity (CSV)
+        case VOCAB_CM_TORQUE:
+        case VOCAB_CM_CURRENT:
+            return 10; // Cyclic-Synch-Torque  (CST)
+        case VOCAB_CM_POSITION_DIRECT:
+            return 8; // Cyclic-Synch-Position (CSP)
+        default:
+            return -1; // not supported
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    //  CiA-402 ➜ YARP   (decode for diagnostics)
+    //--------------------------------------------------------------------------
+    static int ciaOpToYarp(int op)
+    {
+        using namespace yarp::dev;
+        switch (op)
+        {
+        case 0:
+            return VOCAB_CM_IDLE;
+        case 1:
+            return VOCAB_CM_POSITION;
+        case 3:
+            return VOCAB_CM_VELOCITY; // PP-vel still possible
+        case 8:
+            return VOCAB_CM_POSITION_DIRECT;
+        case 9:
+            return VOCAB_CM_VELOCITY;
+        case 10:
+            return VOCAB_CM_TORQUE;
+        default:
+            return VOCAB_CM_UNKNOWN;
+        }
+    }
+
 }; // struct Impl
 
 //  Ds402MotionControl  —  ctor / dtor
@@ -487,6 +550,17 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
+    // Idle the drives (switch-off disabled, no mode)
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        m_impl->rx[j]->Controlword = 0x0000; // CiA-402: switch-on-disabled
+        m_impl->rx[j]->OpMode = 0; // "no mode" → idle
+    }
+
+    /* Push the frame once so the drives actually see it                  */
+    ec_send_processdata();
+    ec_receive_processdata(EC_TIMEOUTRET);
+
     //  8. Fetch static SDO parameters (encoder resolutions, gear ratios)
     if (!m_impl->readEncoderResolutions())
     {
@@ -499,8 +573,6 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
-    // print the SDO parameters
-
     //  9. Start the PeriodicThread (this object) → real-time loop
     if (!this->start())
     {
@@ -511,6 +583,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 
     // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
+    m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
 
     m_impl->fillJointNames(); // fill the joint names
 
@@ -551,7 +624,50 @@ void Ds402MotionControl::run()
         return; // skip one cycle to let drives switch
     }
 
-    // 1. Cyclic exchange -----------------------------------------------------
+    /* ---------------------------------------------------------------------
+     * 1.  APPLY USER-REQUESTED CONTROL MODES
+     * ------------------------------------------------------------------ */
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            RxPDO* rx = m_impl->rx[j];
+            int desired = m_impl->controlModeState.target[j];
+
+            /* Skip if already active (saves bandwidth) */
+            if (desired == m_impl->controlModeState.active[j])
+                continue;
+
+            /* ---------- IDLE (drive disabled) --------------------------- */
+            if (desired == VOCAB_CM_IDLE)
+            {
+                rx->Controlword = 0x0000; // switch-on-disabled
+                rx->OpMode = 0;
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
+                continue;
+            }
+
+            /* ---------- Normal CiA-402 modes --------------------------- */
+            int op = Impl::yarpToCiaOp(desired);
+            if (op < 0)
+            {
+                // unsupported → ignore
+                continue;
+            }
+
+            /* Simple “shutdown → switch-on → enable-operation” sequence */
+            rx->Controlword = 0x0006; // shutdown
+            rx->OpMode = static_cast<int8_t>(op);
+            rx->Controlword = 0x000F; // enable-operation
+
+            m_impl->controlModeState.active[j] = desired;
+        }
+    } // controlModeState.mutex unlocked here
+
+    /* ---------------------------------------------------------------------
+     * 2.  CYCLIC EXCHANGE
+     * ------------------------------------------------------------------ */
     ec_send_processdata();
     int wkc = ec_receive_processdata(EC_TIMEOUTRET);
 
@@ -559,8 +675,32 @@ void Ds402MotionControl::run()
     {
         yWarning("%s: WKC %d < expected %d", Impl::kClassName.data(), wkc, m_impl->expectedWkc);
     }
+    /* ---------------------------------------------------------------------
+     * 3.  CHECK FAULT / ENABLE STATUS
+     * ------------------------------------------------------------------ */
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
 
-    // 2. Read feedback from the drives --------------------------------------
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            uint16_t sw = m_impl->tx[j]->Statusword;
+
+            if (sw & 0x0008) // bit-3 → Fault
+            {
+                m_impl->controlModeState.active[j] = VOCAB_CM_HW_FAULT;
+                continue;
+            }
+            if (!(sw & 0x0004))
+            {
+                // bit-2 clear → not enabled
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------------
+     * 4.  COPY ENCODERS & OTHER FEEDBACK
+     * ------------------------------------------------------------------ */
     m_impl->readFeedback();
 }
 
@@ -977,6 +1117,128 @@ bool Ds402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
     }
     type = yarp::dev::JointTypeEnum::VOCAB_JOINTTYPE_REVOLUTE; // TODO: add support for linear
                                                                // joints
+    return true;
+}
+
+// -------------------------- IControlMode ------------------------------------
+bool Ds402MotionControl::getControlMode(int j, int* mode)
+{
+    if (mode == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        *mode = m_impl->controlModeState.active[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getControlModes(int* modes)
+{
+    if (modes == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+        std::memcpy(modes, m_impl->controlModeState.active.data(), m_impl->numAxes * sizeof(int));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getControlModes(const int n, const int* joints, int* modes)
+{
+    if (modes == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n; ++k)
+        {
+            if (joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+                return false;
+            }
+            modes[k] = m_impl->controlModeState.active[joints[k]];
+        }
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setControlMode(const int j, const int mode)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    if (Impl::yarpToCiaOp(mode) < 0)
+    {
+        yError("%s: control mode %d not supported", Impl::kClassName.data(), mode);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    m_impl->controlModeState.target[j] = mode;
+    return true;
+}
+
+bool Ds402MotionControl::setControlModes(const int n, const int* joints, int* modes)
+{
+    if (modes == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
+        return false;
+    }
+
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        if (joints[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+            return false;
+        }
+        m_impl->controlModeState.target[joints[k]] = modes[k];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setControlModes(int* modes)
+{
+    if (modes == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    std::memcpy(m_impl->controlModeState.target.data(), modes, m_impl->numAxes * sizeof(int));
     return true;
 }
 

@@ -9,6 +9,7 @@
 
 #include <yarp/dev/DeviceDriver.h>
 #include <yarp/dev/IAxisInfo.h>
+#include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/os/PeriodicThread.h>
@@ -27,7 +28,8 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::os::PeriodicThread,
                            public yarp::dev::IMotorEncoders,
                            public yarp::dev::IEncodersTimed,
-                           public yarp::dev::IAxisInfo
+                           public yarp::dev::IAxisInfo,
+                           public yarp::dev::IControlMode
 {
 public:
     /**
@@ -318,6 +320,56 @@ public:
      * JointTypeEnum::VOCAB_JOINTTYPE_REVOLUTE.
      */
     bool getJointType(int axis, yarp::dev::JointTypeEnum& type) override;
+
+    // ---------------- IControlMode ----------------
+
+    /**
+     * @brief Gets the control mode of a specific joint.
+     * @param j Index of the joint.
+     * @param mode Pointer to store the control mode.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlMode(int j, int* mode) override;
+
+    /**
+     * @brief Gets the control modes of all joints.
+     * @param modes Array to store the control modes.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlModes(int* modes) override;
+
+    /**
+     * @brief Gets the control modes of a subset of joints.
+     * @param n Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array to store the control modes.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlModes(const int n, const int* joints, int* modes) override;
+
+    /**
+     * @brief Sets the control mode of a specific joint.
+     * @param j Index of the joint.
+     * @param mode Control mode to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlMode(const int j, const int mode) override;
+
+    /**
+     * @brief Sets the control modes of a subset of joints.
+     * @param n Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array of control modes to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlModes(const int n, const int* joints, int* modes) override;
+
+    /**
+     * @brief Sets the control modes of all joints.
+     * @param modes Array of control modes to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlModes(int* modes) override;
 
 private:
     struct Impl;
