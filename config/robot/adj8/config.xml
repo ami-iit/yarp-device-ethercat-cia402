@@ -7,4 +7,6 @@ BSD-3-Clause license. -->
 
 <robot name="adj8" portprefix="ethercat" build="1" xmlns:xi="http://www.w3.org/2001/XInclude">
     <xi:include href="./motion_control/all_joint_mc.xml" />
+    <xi:include href="./motion_control/all_joint_mc_nws.xml" />
+
 </robot>
