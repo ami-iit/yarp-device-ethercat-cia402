@@ -122,6 +122,7 @@ struct Ds402MotionControl::Impl
         std::vector<double> jointVelocities; // for getJointVelocities()
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> feedbackTime; // feedback time in seconds
+        std::vector<std::string> jointNames; // for getAxisName()
 
         void resizeContainers(std::size_t numAxes)
         {
@@ -132,6 +133,7 @@ struct Ds402MotionControl::Impl
             this->jointPositions.resize(numAxes);
             this->jointVelocities.resize(numAxes);
             this->jointAccelerations.resize(numAxes);
+            this->jointNames.resize(numAxes);
         }
     };
 
@@ -154,6 +156,15 @@ struct Ds402MotionControl::Impl
                    ec_slave[i].state,
                    ec_slave[i].ALstatuscode,
                    ec_ALstatuscode2string(ec_slave[i].ALstatuscode));
+        }
+    }
+
+    void fillJointNames()
+    {
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+            this->variables.jointNames[j] = ec_slave[slaveIdx].name;
         }
     }
 
@@ -500,6 +511,8 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 
     // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
+
+    m_impl->fillJointNames(); // fill the joint names
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
@@ -933,6 +946,37 @@ bool Ds402MotionControl::getEncoderAccelerations(double* accs)
                     m_impl->variables.jointAccelerations.data(),
                     m_impl->numAxes * sizeof(double));
     }
+    return true;
+}
+
+/// -----------------------------------------------
+/// ----------------- IAxisInfo ------------------
+/// -----------------------------------------------
+
+bool Ds402MotionControl::getAxisName(int j, std::string& name)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    // We assume that the name is already filled in the open() method and does not change
+    // during the lifetime of the object. For this reason we do not need to lock the mutex
+    // here.
+    name = m_impl->variables.jointNames[j];
+    return true;
+}
+
+bool Ds402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
+{
+    if (axis >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), axis);
+        return false;
+    }
+    type = yarp::dev::JointTypeEnum::VOCAB_JOINTTYPE_REVOLUTE; // TODO: add support for linear
+                                                               // joints
     return true;
 }
 

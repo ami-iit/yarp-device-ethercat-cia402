@@ -8,6 +8,7 @@
 #include <string>
 
 #include <yarp/dev/DeviceDriver.h>
+#include <yarp/dev/IAxisInfo.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/os/PeriodicThread.h>
@@ -25,7 +26,8 @@ namespace dev
 class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::os::PeriodicThread,
                            public yarp::dev::IMotorEncoders,
-                           public yarp::dev::IEncodersTimed
+                           public yarp::dev::IEncodersTimed,
+                           public yarp::dev::IAxisInfo
 {
 public:
     /**
@@ -296,6 +298,26 @@ public:
      * @return true if successful, false otherwise.
      */
     bool getEncoderAccelerations(double* accs) override;
+
+    // ---------------- IAxisInfo ------------------
+
+    /**
+     * @brief Gets the name of a specific axis.
+     * @param axis Index of the axis.
+     * @param name Reference to a string to store the axis name.
+     * @return true if successful, false otherwise.
+     */
+    bool getAxisName(int axis, std::string& name) override;
+
+    /**
+     * @brief Gets the type of a specific axis.
+     * @param axis Index of the axis.
+     * @param type Reference to a JointTypeEnum to store the axis type.
+     * @return true if successful, false otherwise.
+     * @note For the time being, this function always returns
+     * JointTypeEnum::VOCAB_JOINTTYPE_REVOLUTE.
+     */
+    bool getJointType(int axis, yarp::dev::JointTypeEnum& type) override;
 
 private:
     struct Impl;
