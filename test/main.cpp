@@ -67,7 +67,12 @@ int main(int argc, char* argv[])
     }
     yInfo() << "[main] Successfully viewed IMotorEncoders interface";
     std::vector<double> encoders, velocities;
-    int numAxes = 1;
+    int numAxes = 0;
+    if (!motorEncoders->getNumberOfMotorEncoders(&numAxes) || numAxes <= 0)
+    {
+        yError() << "[main] Failed to retrieve the number of motor encoders or invalid value";
+        return EXIT_FAILURE;
+    }
     encoders.resize(numAxes);
     velocities.resize(numAxes);
 
