@@ -30,8 +30,8 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::dev::IMotorEncoders,
                            public yarp::dev::IEncodersTimed,
                            public yarp::dev::IAxisInfo,
-                           public yarp::dev::IControlMode
-//    public yarp::dev::ITorqueControl
+                           public yarp::dev::IControlMode,
+                           public yarp::dev::ITorqueControl
 {
 public:
     /**
@@ -375,26 +375,67 @@ public:
 
     // ---------------- ITorqueControl --------------
 
-    //  bool getRefTorques(double *t)override;
+    /**
+     * @brief Gets the reference torques for all joints.
+     * @param t Array to store the reference torques.
+     * @return true if successful, false otherwise.
+     */
+    bool getRefTorques(double* t) override;
 
-    //  bool getRefTorque(int j, double *t)override;
+    /**
+     * @brief Gets the reference torque for a specific joint.
+     * @param j Index of the joint.
+     * @param t Pointer to store the reference torque.
+     * @return true if successful, false otherwise.
+     */
+    bool getRefTorque(int j, double* t) override;
 
-    //  bool setRefTorques(const double *t)override;
+    /**
+     * @brief Sets the reference torques for all joints.
+     * @param t Array of reference torques to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setRefTorques(const double* t) override;
 
-    //  bool setRefTorque(int j, double t)override;
+    /**
+     * @brief Sets the reference torque for a specific joint.
+     * @param j Index of the joint.
+     * @param t Reference torque to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setRefTorque(int j, double t) override;
 
-    //  bool getMotorTorqueParams(int j,  yarp::dev::MotorTorqueParameters *params) {return false;}
+    /**
+     * @brief Gets the measured torque for a specific joint.
+     * @param j Index of the joint.
+     * @param t Pointer to store the measured torque.
+     * @return true if successful, false otherwise.
+     */
+    bool getTorque(int j, double* t) override;
 
-    //  bool setMotorTorqueParams(int j,  const yarp::dev::MotorTorqueParameters params) {return
-    //  false;}
+    /**
+     * @brief Gets the measured torques for all joints.
+     * @param t Array to store the measured torques.
+     * @return true if successful, false otherwise.
+     */
+    bool getTorques(double* t) override;
 
-    //  bool getTorque(int j, double *t)override;
+    /**
+     * @brief Gets the torque range for a specific joint.
+     * @param j Index of the joint.
+     * @param min Pointer to store the minimum torque.
+     * @param max Pointer to store the maximum torque.
+     * @return true if successful, false otherwise.
+     */
+    bool getTorqueRange(int j, double* min, double* max) override;
 
-    //  bool getTorques(double *t)override;
-
-    //  bool getTorqueRange(int j, double *min, double *max)override;
-
-    //  bool getTorqueRanges(double *min, double *max)override;
+    /**
+     * @brief Gets the torque ranges for all joints.
+     * @param min Array to store the minimum torques.
+     * @param max Array to store the maximum torques.
+     * @return true if successful, false otherwise.
+     */
+    bool getTorqueRanges(double* min, double* max) override;
 
 private:
     struct Impl;

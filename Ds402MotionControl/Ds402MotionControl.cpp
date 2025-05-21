@@ -69,6 +69,8 @@ struct Ds402MotionControl::Impl
     std::vector<double> gearRatio; //  load-revs : motor-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
     std::vector<double> encoderResInverted; // 1 / encoderRes
+    std::vector<double> ratedTorque; // [Nm] from 0x6076
+    std::vector<double> maxTorque; // [Nm] from 0x6072
 
     struct VariablesReadFromMotors
     {
@@ -79,6 +81,7 @@ struct Ds402MotionControl::Impl
         std::vector<double> jointPositions; // for getJointPositions()
         std::vector<double> jointVelocities; // for getJointVelocities()
         std::vector<double> jointAccelerations; // for getJointAccelerations()
+        std::vector<double> jointTorques; // for getJointTorques()
         std::vector<double> feedbackTime; // feedback time in seconds
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
@@ -94,6 +97,7 @@ struct Ds402MotionControl::Impl
             this->jointVelocities.resize(numAxes);
             this->jointAccelerations.resize(numAxes);
             this->jointNames.resize(numAxes);
+            this->jointTorques.resize(numAxes);
             this->STO.resize(numAxes);
             this->SBC.resize(numAxes);
         }
@@ -114,6 +118,25 @@ struct Ds402MotionControl::Impl
         }
     };
     ControlModeState controlModeState;
+
+    struct SetPoints
+    {
+        std::mutex mutex; // protects the following vectors
+        std::vector<double> jointTorques; // for setTorque()
+
+        void resize(std::size_t n)
+        {
+            jointTorques.resize(n);
+        }
+
+        void reset()
+        {
+            std::lock_guard<std::mutex> lock(this->mutex);
+            std::fill(this->jointTorques.begin(), this->jointTorques.end(), 0.0);
+        }
+    };
+
+    SetPoints setPoints;
 
     /* --------------- CiA-402 power-state machine ------------------------ */
     std::vector<std::unique_ptr<Cia402::StateMachine>> sm;
@@ -257,6 +280,79 @@ struct Ds402MotionControl::Impl
         return true;
     }
 
+    bool readTorqueValues()
+    {
+        this->ratedTorque.resize(numAxes);
+        this->maxTorque.resize(numAxes);
+
+        if (this->gearRatio.empty())
+        {
+            yError("Joint %s: cannot read torque values without gear-ratio", kClassName.data());
+            return false;
+        }
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+
+            uint32_t rated = 0;
+            if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6076, 0x00, rated)
+                != ::Cia402::EthercatManager::Error::NoError)
+            {
+                yError("Joint %s: cannot read rated torque (0x6076:00)", kClassName.data());
+                return false;
+            }
+
+            // we need to convert the rated torque from  mNm to Nm and multiply by the gear ratio
+            this->ratedTorque[j] = static_cast<double>(rated) / 1000.0 * this->gearRatio[j];
+        }
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+
+            uint16_t max = 0;
+            if (ethercatManager.readSDO<uint16_t>(slaveIdx, 0x6072, 0x00, max)
+                != ::Cia402::EthercatManager::Error::NoError)
+            {
+                yError("Joint %s: cannot read max torque (0x6072:00)", kClassName.data());
+                return false;
+            }
+
+            // max is given in per thousandth of rated torque.
+            this->maxTorque[j] = max / 1000.0 * this->ratedTorque[j];
+
+
+            yInfo("Joint %s: rated torque %zu → %.2f Nm", kClassName.data(), j,
+                   this->ratedTorque[j]);
+            yInfo("Joint %s: max torque %zu → %.2f Nm", kClassName.data(), j,
+                   this->maxTorque[j]);
+        }
+
+        return true;
+    }
+
+    bool setSetPoints()
+    {
+        std::lock_guard<std::mutex> lock(this->setPoints.mutex);
+        for (size_t j = 0; j < this->numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+
+            // check the control mode actually active on the drive
+            const int opMode = this->controlModeState.active[j];
+            auto rxPDO = this->ethercatManager.getRxPDO(slaveIdx);
+            if (opMode == VOCAB_CM_TORQUE)
+            {
+                // the torque is the thousand of the rated torque.
+                int16_t torque = static_cast<int16_t>(this->setPoints.jointTorques[j]
+                                                      / this->ratedTorque[j] * 1000.0);
+                rxPDO->TargetTorque = torque;
+            }
+        }
+        return true;
+    }
+
     bool readFeedback()
     {
         // 1. Lock the mutex to protect the PDOs from concurrent access
@@ -289,6 +385,9 @@ struct Ds402MotionControl::Impl
                 = this->variables.motorVelocities[j] * this->gearRatioInv[j];
             this->variables.jointAccelerations[j]
                 = this->variables.motorAccelerations[j] * this->gearRatioInv[j];
+
+            this->variables.jointTorques[j] = static_cast<double>(fb.TorqueValue) / 1000.0
+                                              * this->ratedTorque[j]; // [0.1 Nm] → [Nm]
 
             this->variables.STO[j] = fb.STO;
             this->variables.SBC[j] = fb.SBC;
@@ -466,10 +565,20 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
         yError("%s: failed to read gear ratios", Impl::kClassName.data());
         return false;
     }
+    if (!m_impl->readTorqueValues())
+    {
+        ec_close();
+        return false;
+    }
+
     // ---------------------------------------------------------------------
     // 4. Create YARP‑level containers and CiA‑402 state machines
     // ---------------------------------------------------------------------
+
+    // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
+    m_impl->setPoints.resize(m_impl->numAxes);
+    m_impl->setPoints.reset();
     m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
     m_impl->sm.resize(m_impl->numAxes);
 
@@ -555,17 +664,27 @@ void Ds402MotionControl::run()
         }
     } /* mutex unlocked – PDOs are now ready to send */
 
-    // /* ------------------------------------------------------------------
-    //  * 2.  CYCLIC EXCHANGE  (send outputs / read inputs)
-    //  * ----------------------------------------------------------------*/
+    /* ------------------------------------------------------------------
+     * 2.  SET USER-REQUESTED SETPOINTS (torque, position, velocity)
+     * ----------------------------------------------------------------*/
+    m_impl->setSetPoints();
+
+    /* ------------------------------------------------------------------
+     * 3.  CYCLIC EXCHANGE  (send outputs / read inputs)
+     * ----------------------------------------------------------------*/
     if (m_impl->ethercatManager.sendReceive() != ::Cia402::EthercatManager::Error::NoError)
     {
         yError("%s: sendReceive() failed", Impl::kClassName.data());
     }
 
-    // /* ------------------------------------------------------------------
-    //  * 3.  DIAGNOSTICS  (fill active[] according to feedback)
-    //  * ----------------------------------------------------------------*/
+    /* ------------------------------------------------------------------
+     * 4.  COPY ENCODERS & OTHER FEEDBACK
+     * ----------------------------------------------------------------*/
+    m_impl->readFeedback();
+
+    /* ------------------------------------------------------------------
+     * 5.  DIAGNOSTICS  (fill active[] according to feedback)
+     * ----------------------------------------------------------------*/
     {
         std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
 
@@ -581,6 +700,9 @@ void Ds402MotionControl::run()
                 m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
                 m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
 
+                // we reset the setpoints to 0.0
+                m_impl->setPoints.reset();
+
                 continue;
             }
 
@@ -588,11 +710,6 @@ void Ds402MotionControl::run()
                 = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
         }
     }
-
-    // /* ------------------------------------------------------------------
-    //  * 4.  COPY ENCODERS & OTHER FEEDBACK
-    //  * ----------------------------------------------------------------*/
-    m_impl->readFeedback();
 }
 
 // -----------------------------------------------
@@ -1129,6 +1246,137 @@ bool Ds402MotionControl::setControlModes(int* modes)
 
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     std::memcpy(m_impl->controlModeState.target.data(), modes, m_impl->numAxes * sizeof(int));
+    return true;
+}
+
+//// -------------------------- ITorqueControl ------------------------------------
+bool Ds402MotionControl::getTorque(int j, double* t)
+{
+    if (t == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *t = m_impl->variables.jointTorques[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getTorques(double* t)
+{
+    if (t == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+
+        std::memcpy(t, m_impl->variables.jointTorques.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getRefTorque(int j, double* t)
+{
+    if (t == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        *t = m_impl->setPoints.jointTorques[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getRefTorques(double* t)
+{
+    if (t == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::memcpy(t, m_impl->setPoints.jointTorques.data(), m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setRefTorque(int j, double t)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        m_impl->setPoints.jointTorques[j] = t;
+    }
+    return false;
+}
+
+bool Ds402MotionControl::setRefTorques(const double* t)
+{
+    if (t == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        std::memcpy(m_impl->setPoints.jointTorques.data(), t, m_impl->numAxes * sizeof(double));
+    }
+    return false;
+}
+
+bool Ds402MotionControl::getTorqueRange(int j, double* min, double* max)
+{
+    if (min == nullptr || max == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    *min = -m_impl->maxTorque[j];
+    *max = m_impl->maxTorque[j];
+
+    return true;
+}
+
+bool Ds402MotionControl::getTorqueRanges(double* min, double* max)
+{
+    if (min == nullptr || max == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        min[j] = -m_impl->maxTorque[j];
+        max[j] = m_impl->maxTorque[j];
+    }
     return true;
 }
 
