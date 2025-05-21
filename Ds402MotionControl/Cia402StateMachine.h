@@ -27,6 +27,7 @@
 #define YARP_DEV_CIA402_STATE_MACHINE_H
 
 #include <memory>
+#include <string_view>
 
 namespace yarp
 {
@@ -34,6 +35,71 @@ namespace dev
 {
 namespace Cia402
 {
+
+enum class State : uint8_t
+{
+    NotReadyToSwitchOn = 0, // 0x0000
+    SwitchOnDisabled = 1, // 0x0040
+    ReadyToSwitchOn = 2, // 0x0021
+    SwitchedOn = 3, // 0x0023
+    OperationEnabled = 4, // 0x0027
+    QuickStopActive = 5, // 0x0007
+    FaultReaction = 6, // 0x000F
+    Fault = 7, // 0x0008
+    Unknown = 8
+};
+
+/** Convert a raw status-word to the canonical CiA-402 state.
+ *
+ *  Only the relevant bits (0,1,2,3,4,5,6) are masked, exactly as the spec does.
+ *  Patterns are taken from IEC 61800-7-204, table 13.
+ */
+static inline constexpr State sw_to_state(uint16_t sw)
+{
+    const uint16_t x = sw & 0x006F; // keep bits 0,1,2,4,5,6
+    const uint16_t y = sw & 0x004F; // same, but without bit 5 (QS)
+
+    if (x == 0x0000)
+        return State::NotReadyToSwitchOn; // 0000 0000 0000 0000
+    if (y == 0x0040)
+        return State::SwitchOnDisabled; // 0100 0000
+    if (x == 0x0021)
+        return State::ReadyToSwitchOn; // 0010 0001
+    if (x == 0x0023)
+        return State::SwitchedOn; // 0010 0011
+    if (x == 0x0027)
+        return State::OperationEnabled; // 0010 0111
+    if (x == 0x0007)
+        return State::QuickStopActive; // 0000 0111
+    if (y == 0x000F)
+        return State::FaultReaction; // 0000 1111  (ignore QS)
+    if (y == 0x0008)
+        return State::Fault; // 0000 1000
+    return State::Unknown;
+}
+
+static inline constexpr std::string_view state_to_string(State s)
+{
+    switch (s)
+    {
+    case State::SwitchOnDisabled:
+        return "SwitchOnDisabled";
+    case State::ReadyToSwitchOn:
+        return "ReadyToSwitchOn";
+    case State::SwitchedOn:
+        return "SwitchedOn";
+    case State::OperationEnabled:
+        return "OperationEnabled";
+    case State::QuickStopActive:
+        return "QuickStopActive";
+    case State::FaultReaction:
+        return "FaultReaction";
+    case State::Fault:
+        return "Fault";
+    default:
+        return "Unknown";
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 //  The state‑machine class

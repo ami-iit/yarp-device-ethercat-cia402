@@ -429,6 +429,28 @@ struct Ds402MotionControl::Impl
         }
     }
 
+    static std::string_view yarpToString(int op)
+    {
+        using namespace yarp::dev;
+        switch (op)
+        {
+        case VOCAB_CM_IDLE:
+            return "VOCAB_CM_IDLE";
+        case VOCAB_CM_POSITION:
+            return "VOCAB_CM_POSITION";
+        case VOCAB_CM_VELOCITY:
+            return "VOCAB_CM_VELOCITY";
+        case VOCAB_CM_TORQUE:
+            return "VOCAB_CM_TORQUE";
+        case VOCAB_CM_CURRENT:
+            return "VOCAB_CM_CURRENT";
+        case VOCAB_CM_POSITION_DIRECT:
+            return "VOCAB_CM_POSITION_DIRECT";
+        default:
+            return "UNKNOWN";
+        }
+    }
+
 }; // struct Impl
 
 //  Ds402MotionControl  —  ctor / dtor
@@ -582,6 +604,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
     m_impl->sm.resize(m_impl->numAxes);
+
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
         m_impl->sm[j] = std::make_unique<Cia402::StateMachine>();
@@ -649,17 +672,16 @@ void Ds402MotionControl::run()
 
             const int tgt = m_impl->controlModeState.target[j];
 
-
             /* ------------ FORCE-IDLE  (fault-reset + idle) ------------- */
             if (tgt == VOCAB_CM_FORCE_IDLE)
             {
-
-                yInfo("%s: joint %zu: force-idle", Impl::kClassName.data(), j);
-
                 Cia402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 + OpMode
                                                                                  // 0
                 rx->Controlword = cmd.controlword;
-                rx->OpMode = cmd.opMode;
+                if (cmd.writeOpMode)
+                {
+                    rx->OpMode = cmd.opMode;
+                }
                 continue;
             }
 
@@ -667,25 +689,17 @@ void Ds402MotionControl::run()
             const int8_t opReq = Impl::yarpToCiaOp(tgt); // −1 = unsupported
             if (opReq < 0)
             { // ignore unknown modes
-                yError("%s: joint %zu: requested control mode %d not supported",
-                       Impl::kClassName.data(),
-                       j,
-                       tgt);
                 continue;
             }
 
             Cia402::StateMachine::Command cmd
                 = m_impl->sm[j]->update(tx->Statusword, tx->OpModeDisplay, opReq);
 
-            yInfo("%s: joint %zu: requested control mode %d (0x%04X) → 0x%04X",
-                  Impl::kClassName.data(),
-                  j,
-                  tgt,
-                  cmd.controlword,
-                  cmd.opMode);
-
             rx->Controlword = cmd.controlword;
-            rx->OpMode = cmd.opMode;
+            if (cmd.writeOpMode)
+            {
+                rx->OpMode = cmd.opMode;
+            }
         }
     } /* mutex unlocked – PDOs are now ready to send */
 
@@ -709,22 +723,28 @@ void Ds402MotionControl::run()
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
             const uint16_t sw = m_impl->tx[j]->Statusword;
+            const Cia402::State st = Cia402::sw_to_state(sw);
 
-            if (sw & 0x0008) // Fault bit
+            int yarpMode;
+            switch (st)
             {
-                m_impl->controlModeState.active[j] = VOCAB_CM_HW_FAULT;
-                continue;
+            case Cia402::State::Fault:
+            case Cia402::State::FaultReaction:
+                yarpMode = VOCAB_CM_HW_FAULT; // hard fault
+                break;
+
+            case Cia402::State::QuickStopActive:
+            case Cia402::State::SwitchOnDisabled:
+            case Cia402::State::ReadyToSwitchOn:
+                yarpMode = VOCAB_CM_IDLE; // power stage open
+                break;
+
+            default: // any powered state
+                yarpMode = Impl::ciaOpToYarp(m_impl->tx[j]->OpModeDisplay);
+                break;
             }
 
-            if (!(sw & 0x0001)) // power disabled
-            {
-                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
-                continue;
-            }
-
-            /* echo the mode reported by the drive (0x6061) */
-            const int echo = Impl::ciaOpToYarp(m_impl->tx[j]->OpModeDisplay);
-            m_impl->controlModeState.active[j] = echo;
+            m_impl->controlModeState.active[j] = yarpMode;
         }
     }
 
