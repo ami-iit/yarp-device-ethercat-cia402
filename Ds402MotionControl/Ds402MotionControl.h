@@ -13,6 +13,7 @@
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/ITorqueControl.h>
+#include <yarp/dev/IVelocityControl.h>
 #include <yarp/os/PeriodicThread.h>
 
 namespace yarp
@@ -31,7 +32,8 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::dev::IEncodersTimed,
                            public yarp::dev::IAxisInfo,
                            public yarp::dev::IControlMode,
-                           public yarp::dev::ITorqueControl
+                           public yarp::dev::ITorqueControl,
+                           public yarp::dev::IVelocityControl
 {
 public:
     /**
@@ -436,6 +438,156 @@ public:
      * @return true if successful, false otherwise.
      */
     bool getTorqueRanges(double* min, double* max) override;
+
+    // ---------------- IVelocityControl --------------
+
+    /**
+     * @brief Commands a velocity move for a specific joint.
+     *
+     * @param j Index of the joint.
+     * @param sp Desired velocity setpoint (units: deg/s or rad/s, depending on configuration).
+     * @return true if successful, false otherwise.
+     *
+     * @note This interface implements Cyclic Synchronous Velocity Mode (CSV), so the command is
+     * sent cyclically.
+     */
+    bool velocityMove(int j, double sp) override;
+
+    /**
+     * @brief Commands velocity moves for all joints.
+     *
+     * @param sp Array of desired velocity setpoints for each joint.
+     * @return true if successful, false otherwise.
+     *
+     * @note This interface implements Cyclic Synchronous Velocity Mode (CSV), so the command is
+     * sent cyclically.
+     */
+    bool velocityMove(const double* sp) override;
+
+    /**
+     * @brief Gets the reference velocity for a specific joint.
+     *
+     * @param joint Index of the joint.
+     * @param vel Pointer to store the reference velocity.
+     * @return true if successful, false otherwise.
+     */
+    bool getRefVelocity(const int joint, double* vel) override;
+
+    /**
+     * @brief Gets the reference velocities for all joints.
+     *
+     * @param vels Array to store the reference velocities.
+     * @return true if successful, false otherwise.
+     */
+    bool getRefVelocities(double* vels) override;
+
+    /**
+     * @brief Gets the reference velocity for a subset of joints.
+     *
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param vels Array to store the reference velocities.
+     * @return true if successful, false otherwise.
+     */
+    bool getRefVelocities(const int n_joint, const int* joints, double* vels) override;
+   
+    /**
+     * @brief (Unused in CSV mode) Sets the reference acceleration for a specific joint.
+     *
+     * @param j Index of the joint.
+     * @param acc Reference acceleration (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool setRefAcceleration(int j, double acc) override;
+
+    /**
+     * @brief (Unused in CSV mode) Sets the reference accelerations for all joints.
+     *
+     * @param accs Array of reference accelerations (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool setRefAccelerations(const double* accs) override;
+
+    /**
+     * @brief (Unused in CSV mode) Gets the reference acceleration for a specific joint.
+     *
+     * @param j Index of the joint.
+     * @param acc Pointer to store the reference acceleration (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool getRefAcceleration(int j, double* acc) override;
+
+    /**
+     * @brief (Unused in CSV mode) Gets the reference accelerations for all joints.
+     *
+     * @param accs Array to store the reference accelerations (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool getRefAccelerations(double* accs) override;
+
+    /**
+     * @brief Stops motion for a specific joint.
+     *
+     * @param j Index of the joint.
+     * @return true if successful, false otherwise.
+     *
+     * @note In CSV mode, this typically sets the velocity setpoint to zero for the specified joint.
+     */
+    bool stop(int j) override;
+
+    /**
+     * @brief Stops motion for all joints.
+     *
+     * @return true if successful, false otherwise.
+     *
+     * @note In CSV mode, this typically sets all velocity setpoints to zero.
+     */
+    bool stop() override;
+
+    /**
+     * @brief Commands velocity moves for a subset of joints.
+     *
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param spds Array of desired velocity setpoints for the specified joints.
+     * @return true if successful, false otherwise.
+     *
+     * @note This interface implements Cyclic Synchronous Velocity Mode (CSV), so the command is
+     * sent cyclically.
+     */
+    bool velocityMove(const int n_joint, const int* joints, const double* spds) override;
+
+    /**
+     * @brief (Unused in CSV mode) Sets the reference accelerations for a subset of joints.
+     *
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param accs Array of reference accelerations (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool setRefAccelerations(const int n_joint, const int* joints, const double* accs) override;
+
+    /**
+     * @brief (Unused in CSV mode) Gets the reference accelerations for a subset of joints.
+     *
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param accs Array to store the reference accelerations (ignored).
+     * @return Always returns false. Not used in Cyclic Synchronous Velocity Mode.
+     */
+    bool getRefAccelerations(const int n_joint, const int* joints, double* accs) override;
+
+    /**
+     * @brief Stops motion for a subset of joints.
+     *
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @return true if successful, false otherwise.
+     *
+     * @note In CSV mode, this typically sets the velocity setpoints to zero for the specified
+     * joints.
+     */
+    bool stop(const int n_joint, const int* joints) override;
 
 private:
     struct Impl;
