@@ -21,9 +21,9 @@ struct TxPDO // (= slave → master, also called *Tx*PDO)
     int32_t VelocityValue; // [rpm]
     int16_t TorqueValue; // [0.1 Nm]
     int32_t PositionErrorActualValue;
-    uint32_t Timestamp;
-    uint8_t STO;
-    uint8_t SBC;
+    uint32_t Timestamp;    // [us] --> Synapticon only
+    uint8_t STO;  // --> Synapticon only
+    uint8_t SBC; // --> Synapticon only
 };
 
 struct RxPDO // (= master → slave, also called *Rx*PDO)
@@ -71,9 +71,9 @@ public:
     }
 
     const RxPDO* getRxPDO(int slaveIndex) const noexcept;
-    RxPDO* getRxPDOMutable(int slaveIndex) noexcept;
+    RxPDO* getRxPDO(int slaveIndex) noexcept;
     const TxPDO* getTxPDO(int slaveIndex) const noexcept;
-    TxPDO* getTxPDOMutable(int slaveIndex) noexcept;
+    TxPDO* getTxPDO(int slaveIndex) noexcept;
 
     template <typename T>
     Error readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) noexcept;
@@ -84,6 +84,8 @@ private:
     {
         return idx >= 1 && idx <= ec_slavecount;
     }
+
+    Error configurePDOMapping(int s);
 
     std::atomic<bool> m_initialized{false};
     std::atomic<bool> m_runWatch{false};
