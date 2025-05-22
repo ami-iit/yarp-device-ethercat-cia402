@@ -22,8 +22,8 @@ struct TxPDO // (= slave → master, also called *Tx*PDO)
     int16_t TorqueValue; // [0.1 Nm]
     int32_t PositionErrorActualValue;
     uint32_t Timestamp;
-    unit8_t STO;
-    unit8_t SBC;
+    uint8_t STO;
+    uint8_t SBC;
 };
 
 struct RxPDO // (= master → slave, also called *Rx*PDO)
