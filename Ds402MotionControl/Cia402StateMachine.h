@@ -154,6 +154,8 @@ public:
      */
     Command update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq);
 
+    int8_t getActiveOpMode() const noexcept;
+
     /**
      * @brief Generates a fault reset command.
      *

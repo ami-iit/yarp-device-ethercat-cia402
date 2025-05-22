@@ -37,6 +37,11 @@ void yarp::dev::Cia402::StateMachine::reset()
     m_impl->activeOpEcho = 0;
 }
 
+int8_t yarp::dev::Cia402::StateMachine::getActiveOpMode() const noexcept
+{
+    return m_impl->activeOpEcho;
+}
+
 yarp::dev::Cia402::StateMachine::Command
 yarp::dev::Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
 {
@@ -57,11 +62,6 @@ yarp::dev::Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDispla
         return {CW_FAULT_RST, 0, false};
     }
 
-    // yError("Cia402::update: statusword=0x%04X → %s (req=%d, active=%d)",
-    //        statusword,
-    //        state_to_string(state).data(),
-    //        opReq,
-    //        m_impl->activeOpEcho);
 
     // Idle
     if (opReq == 0)
