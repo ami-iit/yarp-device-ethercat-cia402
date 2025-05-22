@@ -137,6 +137,13 @@ struct Ds402MotionControl::Impl
             std::fill(this->jointTorques.begin(), this->jointTorques.end(), 0.0);
             std::fill(this->jointVelocities.begin(), this->jointVelocities.end(), 0.0);
         }
+
+        void reset(int axis)
+        {
+            std::lock_guard<std::mutex> lock(this->mutex);
+            this->jointTorques[axis] = 0.0;
+            this->jointVelocities[axis] = 0.0;
+        }
     };
 
     SetPoints setPoints;
@@ -325,11 +332,11 @@ struct Ds402MotionControl::Impl
             // max is given in per thousandth of rated torque.
             this->maxTorque[j] = max / 1000.0 * this->ratedTorque[j];
 
-
-            yInfo("Joint %s: rated torque %zu → %.2f Nm", kClassName.data(), j,
-                   this->ratedTorque[j]);
-            yInfo("Joint %s: max torque %zu → %.2f Nm", kClassName.data(), j,
-                   this->maxTorque[j]);
+            yInfo("Joint %s: rated torque %zu → %.2f Nm",
+                  kClassName.data(),
+                  j,
+                  this->ratedTorque[j]);
+            yInfo("Joint %s: max torque %zu → %.2f Nm", kClassName.data(), j, this->maxTorque[j]);
         }
 
         return true;
@@ -358,7 +365,7 @@ struct Ds402MotionControl::Impl
                 // the velocity is in rpm
                 int32_t vel = static_cast<int32_t>(this->setPoints.jointVelocities[j]
                                                    * this->gearRatio[j] * DEG_PER_SEC_TO_RPM);
-                this->rx[j]->TargetVelocity = vel;
+                rxPDO->TargetVelocity = vel;
             }
         }
         return true;
@@ -710,15 +717,16 @@ void Ds402MotionControl::run()
             {
                 m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
                 m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
-
-                // we reset the setpoints to 0.0
-                m_impl->setPoints.reset();
-
-                continue;
+            } else
+            {
+                m_impl->controlModeState.active[j]
+                    = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
             }
 
-            m_impl->controlModeState.active[j]
-                = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
+            if (m_impl->controlModeState.active[j] == VOCAB_CM_IDLE)
+            {
+                m_impl->setPoints.reset(j);
+            }
         }
     }
 }
