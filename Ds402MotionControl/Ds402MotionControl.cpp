@@ -578,8 +578,7 @@ void Ds402MotionControl::run()
 
             if (SBC == 1 || STO == 1)
             {
-                yError("%s: joint %zu: SBC or STO active", Impl::kClassName.data(), j);
-                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE; // IDLE
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
                 m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
 
                 continue;

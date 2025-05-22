@@ -1,8 +1,14 @@
+// SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "EthercatManager.h"
+
+// std
 #include <chrono>
 #include <thread>
-
+// yarp
 #include <yarp/os/LogStream.h>
+
 using namespace Cia402;
 
 constexpr uint32_t mapEntry(uint16_t idx, uint8_t sub, uint8_t bits)
@@ -60,9 +66,17 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
     wr32(0x1A00, ++n, mapEntry(0x606C, 0x00, 32));
     wr32(0x1A00, ++n, mapEntry(0x6077, 0x00, 16));
     wr32(0x1A00, ++n, mapEntry(0x6065, 0x00, 32));
-    wr32(0x1A00, ++n, mapEntry(0x20F0, 0x00, 32)); // timestamp --> synapticon https://doc.synapticon.com/circulo/sw5.1/objects_html/2xxx/20f0.html?Highlight=0x20F0
-    wr32(0x1A00, ++n, mapEntry(0x6621, 0x01, 8)); // STO --> synapticon https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
-    wr32(0x1A00, ++n, mapEntry(0x6621, 0x02, 8)); // SBC  --> synapticon https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
+
+    // The following entries are specific to the Synapticon drives
+    // timestamp --> synapticon
+    // https://doc.synapticon.com/circulo/sw5.1/objects_html/2xxx/20f0.html?Highlight=0x20F0
+    wr32(0x1A00, ++n, mapEntry(0x20F0, 0x00, 32));
+    // STO --> synapticon
+    // https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
+    wr32(0x1A00, ++n, mapEntry(0x6621, 0x01, 8));
+    // SBC  --> synapticon
+    // https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
+    wr32(0x1A00, ++n, mapEntry(0x6621, 0x02, 8));
     wr8(0x1A00, 0x00, n);
 
     /* ---------- (re)assign to sync-managers ---------- */

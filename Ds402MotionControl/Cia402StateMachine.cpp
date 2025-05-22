@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "Cia402StateMachine.h"
-#include <yarp/os/LogStream.h>
 
-namespace yarp::dev::Cia402
+namespace Cia402
 {
 
 /// Control‑word constants (CiA‑402 table 46)
@@ -14,9 +13,9 @@ static constexpr uint16_t CW_SWITCH_ON = 0x0007;
 static constexpr uint16_t CW_ENABLE_OP = 0x000F;
 static constexpr uint16_t CW_FAULT_RST = 0x0080;
 static constexpr uint16_t CW_QUICKSTOP = 0x0002;
-} // namespace yarp::dev::Cia402
+} // namespace Cia402
 
-struct yarp::dev::Cia402::StateMachine::Impl
+struct Cia402::StateMachine::Impl
 {
     Impl() = default;
     ~Impl() = default;
@@ -24,26 +23,26 @@ struct yarp::dev::Cia402::StateMachine::Impl
     int8_t activeOpEcho{0}; //!< latest OpModeDisplay from the drive
 };
 
-yarp::dev::Cia402::StateMachine::StateMachine()
+Cia402::StateMachine::StateMachine()
     : m_impl(std::make_unique<Impl>())
 {
 }
 
-yarp::dev::Cia402::StateMachine::~StateMachine() = default;
+Cia402::StateMachine::~StateMachine() = default;
 
-void yarp::dev::Cia402::StateMachine::reset()
+void Cia402::StateMachine::reset()
 {
     // Reset the state machine to its initial state.
     m_impl->activeOpEcho = 0;
 }
 
-int8_t yarp::dev::Cia402::StateMachine::getActiveOpMode() const noexcept
+int8_t Cia402::StateMachine::getActiveOpMode() const noexcept
 {
     return m_impl->activeOpEcho;
 }
 
-yarp::dev::Cia402::StateMachine::Command
-yarp::dev::Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
+Cia402::StateMachine::Command
+Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
 {
     // Map Statusword to one of the canonical CiA‑402 states.
     const State state = sw_to_state(statusword);
@@ -61,7 +60,6 @@ yarp::dev::Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDispla
     {
         return {CW_FAULT_RST, 0, false};
     }
-
 
     // Idle
     if (opReq == 0)
@@ -112,7 +110,7 @@ yarp::dev::Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDispla
 }
 
 /** Immediate Fault reset (equivalent to requesting VOCAB_CM_FORCE_IDLE). */
-yarp::dev::Cia402::StateMachine::Command yarp::dev::Cia402::StateMachine::faultReset() noexcept
+Cia402::StateMachine::Command Cia402::StateMachine::faultReset() noexcept
 {
     return {CW_FAULT_RST, 0, false};
 }

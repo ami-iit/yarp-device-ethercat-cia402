@@ -1,5 +1,8 @@
-#ifndef ETHERCAT_MANAGER_H
-#define ETHERCAT_MANAGER_H
+// SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
+// SPDX-License-Identifier: BSD-3-Clause
+
+#ifndef YARP_DEV_CIA402_ETHERCAT_MANAGER_H
+#define YARP_DEV_CIA402_ETHERCAT_MANAGER_H
 
 #include "ethercat.h"
 #include <atomic>
@@ -21,8 +24,8 @@ struct TxPDO // (= slave → master, also called *Tx*PDO)
     int32_t VelocityValue; // [rpm]
     int16_t TorqueValue; // [0.1 Nm]
     int32_t PositionErrorActualValue;
-    uint32_t Timestamp;    // [us] --> Synapticon only
-    uint8_t STO;  // --> Synapticon only
+    uint32_t Timestamp; // [us] --> Synapticon only
+    uint8_t STO; // --> Synapticon only
     uint8_t SBC; // --> Synapticon only
 };
 
@@ -121,4 +124,4 @@ EthercatManager::readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) n
 
 } // namespace Cia402
 
-#endif // ETHERCAT_MANAGER_H
+#endif // YARP_DEV_CIA402_ETHERCAT_MANAGER_H

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef YARP_DEV_DS402_MOTION_CONTROL_H
-#define YARP_DEV_DS402_MOTION_CONTROL_H
+#ifndef YARP_DEV_CIA402_MOTION_CONTROL_H
+#define YARP_DEV_CIA402_MOTION_CONTROL_H
 
 #include <memory>
 #include <string>
@@ -31,7 +31,7 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::dev::IEncodersTimed,
                            public yarp::dev::IAxisInfo,
                            public yarp::dev::IControlMode
-                        //    public yarp::dev::ITorqueControl
+//    public yarp::dev::ITorqueControl
 {
 public:
     /**
@@ -375,26 +375,25 @@ public:
 
     // ---------------- ITorqueControl --------------
 
- 
     //  bool getRefTorques(double *t)override;
- 
+
     //  bool getRefTorque(int j, double *t)override;
- 
+
     //  bool setRefTorques(const double *t)override;
- 
+
     //  bool setRefTorque(int j, double t)override;
- 
- 
+
     //  bool getMotorTorqueParams(int j,  yarp::dev::MotorTorqueParameters *params) {return false;}
- 
-    //  bool setMotorTorqueParams(int j,  const yarp::dev::MotorTorqueParameters params) {return false;}
- 
+
+    //  bool setMotorTorqueParams(int j,  const yarp::dev::MotorTorqueParameters params) {return
+    //  false;}
+
     //  bool getTorque(int j, double *t)override;
- 
+
     //  bool getTorques(double *t)override;
- 
+
     //  bool getTorqueRange(int j, double *min, double *max)override;
- 
+
     //  bool getTorqueRanges(double *min, double *max)override;
 
 private:
@@ -405,4 +404,4 @@ private:
 } // namespace dev
 } // namespace yarp
 
-#endif // YARP_DEV_DS402_MOTION_CONTROL_H
+#endif // YARP_DEV_CIA402_MOTION_CONTROL_H

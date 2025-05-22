@@ -29,10 +29,6 @@
 #include <memory>
 #include <string_view>
 
-namespace yarp
-{
-namespace dev
-{
 namespace Cia402
 {
 
@@ -78,28 +74,29 @@ static inline constexpr State sw_to_state(uint16_t sw)
     return State::Unknown;
 }
 
-static inline constexpr std::string_view state_to_string(State s)
-{
-    switch (s)
-    {
-    case State::SwitchOnDisabled:
-        return "SwitchOnDisabled";
-    case State::ReadyToSwitchOn:
-        return "ReadyToSwitchOn";
-    case State::SwitchedOn:
-        return "SwitchedOn";
-    case State::OperationEnabled:
-        return "OperationEnabled";
-    case State::QuickStopActive:
-        return "QuickStopActive";
-    case State::FaultReaction:
-        return "FaultReaction";
-    case State::Fault:
-        return "Fault";
-    default:
-        return "Unknown";
-    }
-}
+// Only for debugging
+// static inline constexpr std::string_view state_to_string(State s)
+// {
+//     switch (s)
+//     {
+//     case State::SwitchOnDisabled:
+//         return "SwitchOnDisabled";
+//     case State::ReadyToSwitchOn:
+//         return "ReadyToSwitchOn";
+//     case State::SwitchedOn:
+//         return "SwitchedOn";
+//     case State::OperationEnabled:
+//         return "OperationEnabled";
+//     case State::QuickStopActive:
+//         return "QuickStopActive";
+//     case State::FaultReaction:
+//         return "FaultReaction";
+//     case State::Fault:
+//         return "Fault";
+//     default:
+//         return "Unknown";
+//     }
+// }
 
 // ────────────────────────────────────────────────────────────────────────────
 //  The state‑machine class
@@ -171,7 +168,5 @@ private:
 };
 
 } // namespace Cia402
-} // namespace dev
-} // namespace yarp
 
 #endif // YARP_DEV_CIA402_STATE_MACHINE_H
