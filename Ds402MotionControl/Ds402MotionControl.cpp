@@ -36,52 +36,8 @@
 #include <string_view>
 #include <vector>
 
-// // Forward declarations for the process-data structs that each drive exposes.
-// // TODO: move to a separate header file better if we can set if from configuratrion file
-// #pragma pack(push, 1)
-// struct FeedbackPDO // (= slave → master, also called *Tx*PDO)
-// {
-//     uint16_t Statusword;
-//     int8_t OpModeDisplay;
-//     int32_t PositionValue; // [encoder counts]
-//     int32_t VelocityValue; // [rpm]
-//     int16_t TorqueValue; // [0.1 Nm]
-//     int32_t PositionErrorActualValue;
-//     uint16_t AnalogInput1;
-//     uint16_t AnalogInput2;
-//     uint16_t AnalogInput3;
-//     uint16_t AnalogInput4;
-//     uint32_t TuningStatus;
-//     uint32_t DigitalInputs;
-//     uint32_t UserMISO;
-//     uint32_t Timestamp;
-//     int32_t PositionDemandInternalValue;
-//     int32_t VelocityDemandValue;
-//     int16_t TorqueDemand;
-// };
-
-// struct CommandPDO // (= master → slave, also called *Rx*PDO)
-// {
-//     uint16_t Controlword;
-//     int8_t OpMode;
-//     int16_t TargetTorque;
-//     int32_t TargetPosition;
-//     int32_t TargetVelocity;
-//     int16_t TorqueOffset;
-//     int32_t TuningCommand;
-//     int32_t PhysicalOutputs;
-//     int32_t BitMask;
-//     int32_t UserMOSI;
-//     int32_t VelocityOffset;
-// };
-// #pragma pack(pop)
-
 namespace yarp::dev
 {
-
-// Forward declarations expected by template code
-// using RxPDO = CommandPDO; // outputs (master → slave)
-// using TxPDO = FeedbackPDO; // inputs  (slave → master)
 
 struct Ds402MotionControl::Impl
 {
@@ -109,9 +65,6 @@ struct Ds402MotionControl::Impl
     //--------------------------------------------------------------------------
     // Runtime bookkeeping
     //--------------------------------------------------------------------------
-    uint32_t expectedWkc{0}; // for fast I/O integrity check
-    // std::vector<RxPDO*> rx; // one ptr per joint → command area
-    // std::vector<TxPDO*> tx; // one ptr per joint → feedback area
     std::vector<uint32_t> encoderRes; // "counts per revolution" etc.
     std::vector<double> gearRatio; //  load-revs : motor-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
@@ -193,50 +146,6 @@ struct Ds402MotionControl::Impl
             this->variables.jointNames[j] = ec_slave[slaveIdx].name;
         }
     }
-
-    // //--------------------------------------------------------------------------
-    // //  Build rx[] / tx[] vectors so that joint j → slave (firstSlave + j)
-    // //--------------------------------------------------------------------------
-    // bool buildJointIoPointers()
-    // {
-    //     this->rx.resize(numAxes);
-    //     this->tx.resize(numAxes);
-
-    //     for (size_t j = 0; j < numAxes; ++j)
-    //     {
-    //         const int slaveIdx = firstSlave + static_cast<int>(j);
-
-    //         // Sanity-check: is the bus long enough?
-    //         if (slaveIdx > ec_slavecount)
-    //         {
-    //             yError("%s: joint %zu → slave %d (out of range)", kClassName.data(), j,
-    //             slaveIdx); return false;
-    //         }
-
-    //         // Optional: verify the name if the user gave one
-    //         if (!expectedName.empty()
-    //             && std::strcmp(ec_slave[slaveIdx].name, expectedName.c_str()) != 0)
-    //         {
-    //             yError("%: joint %zu → slave %d (%s) does not match expected name '%s'",
-    //                    kClassName.data(),
-    //                    j,
-    //                    slaveIdx,
-    //                    ec_slave[slaveIdx].name,
-    //                    expectedName.c_str());
-    //             return false;
-    //         }
-
-    //         // Set the pointers to the PDO areas
-    //         rx[j] = reinterpret_cast<RxPDO*>(ec_slave[slaveIdx].outputs);
-    //         tx[j] = reinterpret_cast<TxPDO*>(ec_slave[slaveIdx].inputs);
-    //         if (rx[j] == nullptr || tx[j] == nullptr)
-    //         {
-    //             yError("%s: joint %zu → slave %d has no PDOs", kClassName.data(), j, slaveIdx);
-    //             return false;
-    //         }
-    //     }
-    //     return true;
-    // }
 
     //--------------------------------------------------------------------------
     //  One-shot SDO reads – here we only fetch encoder resolutions
@@ -592,7 +501,6 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 bool Ds402MotionControl::close()
 {
     this->stop(); // PeriodicThread → graceful stop
-    ec_close();
     yInfo("%s: EtheCAT master closed", Impl::kClassName.data());
     return true;
 }
@@ -600,119 +508,87 @@ bool Ds402MotionControl::close()
 //  run()  —  gets called every period (real-time control loop)
 void Ds402MotionControl::run()
 {
-    // read and write the PDOs in a cyclic way
-    m_impl->ethercatManager.sendReceive();
+    /* ------------------------------------------------------------------
+     * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
+     * ----------------------------------------------------------------*/
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
 
-    // /* ------------------------------------------------------------------
-    //  * 0.  (first call)   be sure the ring is still OPERATIONAL
-    //  * ----------------------------------------------------------------*/
-    // if (!m_impl->opRequested) // first pass
-    // {
-    //     std::memset(m_impl->ioMap, 0, sizeof(m_impl->ioMap));
-    //     ec_send_processdata();
-    //     ec_receive_processdata(EC_TIMEOUTRET);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
+            ::Cia402::RxPDO* rx = m_impl->ethercatManager.getRxPDO(slaveIdx);
+            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
 
-    //     for (std::size_t i = 1; i <= ec_slavecount; ++i)
-    //         ec_slave[i].state = EC_STATE_OPERATIONAL;
+            const int tgt = m_impl->controlModeState.target[j];
 
-    //     ec_writestate(0);
-    //     m_impl->opRequested = true;
+            // /* ------------ FORCE-IDLE  (fault-reset + idle) ------------- */
+            // if (tgt == VOCAB_CM_FORCE_IDLE)
+            // {
+            //     Cia402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 +
+            //     OpMode
+            //         // 0
+            //         rx->Controlword
+            //         = cmd.controlword;
+            //     if (cmd.writeOpMode)
+            //     {
+            //         rx->OpMode = cmd.opMode;
+            //     }
+            //     continue;
+            // }
 
-    //     yInfo("%s: requested OPERATIONAL state. This is the first run() call.",
-    //           Impl::kClassName.data());
-    //     return; // let drives settle
-    // }
+            /* ------------ normal control-mode path --------------------- */
+            const int8_t opReq = Impl::yarpToCiaOp(tgt); // −1 = unsupported
+            if (opReq < 0)
+            { // ignore unknown modes
+                continue;
+            }
 
-    // /* ------------------------------------------------------------------
-    //  * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
-    //  * ----------------------------------------------------------------*/
-    // {
-    //     std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+            Cia402::StateMachine::Command cmd
+                = m_impl->sm[j]->update(tx->Statusword, tx->OpModeDisplay, opReq);
 
-    //     for (size_t j = 0; j < m_impl->numAxes; ++j)
-    //     {
-    //         RxPDO* rx = m_impl->rx[j];
-    //         TxPDO* tx = m_impl->tx[j];
-
-    //         const int tgt = m_impl->controlModeState.target[j];
-
-    //         /* ------------ FORCE-IDLE  (fault-reset + idle) ------------- */
-    //         if (tgt == VOCAB_CM_FORCE_IDLE)
-    //         {
-    //             Cia402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 +
-    //             OpMode
-    //                                                                              // 0
-    //             rx->Controlword = cmd.controlword;
-    //             if (cmd.writeOpMode)
-    //             {
-    //                 rx->OpMode = cmd.opMode;
-    //             }
-    //             continue;
-    //         }
-
-    //         /* ------------ normal control-mode path --------------------- */
-    //         const int8_t opReq = Impl::yarpToCiaOp(tgt); // −1 = unsupported
-    //         if (opReq < 0)
-    //         { // ignore unknown modes
-    //             continue;
-    //         }
-
-    //         Cia402::StateMachine::Command cmd
-    //             = m_impl->sm[j]->update(tx->Statusword, tx->OpModeDisplay, opReq);
-
-    //         rx->Controlword = cmd.controlword;
-    //         if (cmd.writeOpMode)
-    //         {
-    //             rx->OpMode = cmd.opMode;
-    //         }
-    //     }
-    // } /* mutex unlocked – PDOs are now ready to send */
+            rx->Controlword = cmd.controlword;
+            if (cmd.writeOpMode)
+            {
+                rx->OpMode = cmd.opMode;
+            }
+        }
+    } /* mutex unlocked – PDOs are now ready to send */
 
     // /* ------------------------------------------------------------------
     //  * 2.  CYCLIC EXCHANGE  (send outputs / read inputs)
     //  * ----------------------------------------------------------------*/
-    // ec_send_processdata();
-    // int wkc = ec_receive_processdata(EC_TIMEOUTRET);
-
-    // if (wkc < static_cast<int>(m_impl->expectedWkc))
-    // {
-    //     yWarning("%s: WKC %d < expected %d", Impl::kClassName.data(), wkc,
-    //     m_impl->expectedWkc);
-    // }
+    if (m_impl->ethercatManager.sendReceive() != ::Cia402::EthercatManager::Error::NoError)
+    {
+        yError("%s: sendReceive() failed", Impl::kClassName.data());
+    }
 
     // /* ------------------------------------------------------------------
     //  * 3.  DIAGNOSTICS  (fill active[] according to feedback)
     //  * ----------------------------------------------------------------*/
-    // {
-    //     std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
 
-    //     for (size_t j = 0; j < m_impl->numAxes; ++j)
-    //     {
-    //         const uint16_t sw = m_impl->tx[j]->Statusword;
-    //         const Cia402::State st = Cia402::sw_to_state(sw);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
+            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
+            const uint8_t SBC = tx->SBC;
+            const uint8_t STO = tx->STO;
 
-    //         int yarpMode;
-    //         switch (st)
-    //         {
-    //         case Cia402::State::Fault:
-    //         case Cia402::State::FaultReaction:
-    //             yarpMode = VOCAB_CM_HW_FAULT; // hard fault
-    //             break;
+            if (SBC == 1 || STO == 1)
+            {
+                yError("%s: joint %zu: SBC or STO active", Impl::kClassName.data(), j);
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE; // IDLE
+                m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
 
-    //         case Cia402::State::QuickStopActive:
-    //         case Cia402::State::SwitchOnDisabled:
-    //         case Cia402::State::ReadyToSwitchOn:
-    //             yarpMode = VOCAB_CM_IDLE; // power stage open
-    //             break;
+                continue;
+            }
 
-    //         default: // any powered state
-    //             yarpMode = Impl::ciaOpToYarp(m_impl->tx[j]->OpModeDisplay);
-    //             break;
-    //         }
-
-    //         m_impl->controlModeState.active[j] = yarpMode;
-    //     }
-    // }
+            m_impl->controlModeState.active[j]
+                = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
+        }
+    }
 
     // /* ------------------------------------------------------------------
     //  * 4.  COPY ENCODERS & OTHER FEEDBACK
