@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef YARP_DEV_DS402_MOTION_CONTROL_H
-#define YARP_DEV_DS402_MOTION_CONTROL_H
+#ifndef YARP_DEV_CIA402_MOTION_CONTROL_H
+#define YARP_DEV_CIA402_MOTION_CONTROL_H
 
 #include <memory>
 #include <string>
 
 #include <yarp/dev/DeviceDriver.h>
 #include <yarp/dev/IAxisInfo.h>
+#include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IMotorEncoders.h>
+#include <yarp/dev/ITorqueControl.h>
 #include <yarp/os/PeriodicThread.h>
 
 namespace yarp
@@ -27,7 +29,9 @@ class Ds402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::os::PeriodicThread,
                            public yarp::dev::IMotorEncoders,
                            public yarp::dev::IEncodersTimed,
-                           public yarp::dev::IAxisInfo
+                           public yarp::dev::IAxisInfo,
+                           public yarp::dev::IControlMode
+//    public yarp::dev::ITorqueControl
 {
 public:
     /**
@@ -319,6 +323,79 @@ public:
      */
     bool getJointType(int axis, yarp::dev::JointTypeEnum& type) override;
 
+    // ---------------- IControlMode ----------------
+
+    /**
+     * @brief Gets the control mode of a specific joint.
+     * @param j Index of the joint.
+     * @param mode Pointer to store the control mode.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlMode(int j, int* mode) override;
+
+    /**
+     * @brief Gets the control modes of all joints.
+     * @param modes Array to store the control modes.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlModes(int* modes) override;
+
+    /**
+     * @brief Gets the control modes of a subset of joints.
+     * @param n Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array to store the control modes.
+     * @return true if successful, false otherwise.
+     */
+    bool getControlModes(const int n, const int* joints, int* modes) override;
+
+    /**
+     * @brief Sets the control mode of a specific joint.
+     * @param j Index of the joint.
+     * @param mode Control mode to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlMode(const int j, const int mode) override;
+
+    /**
+     * @brief Sets the control modes of a subset of joints.
+     * @param n Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array of control modes to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlModes(const int n, const int* joints, int* modes) override;
+
+    /**
+     * @brief Sets the control modes of all joints.
+     * @param modes Array of control modes to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setControlModes(int* modes) override;
+
+    // ---------------- ITorqueControl --------------
+
+    //  bool getRefTorques(double *t)override;
+
+    //  bool getRefTorque(int j, double *t)override;
+
+    //  bool setRefTorques(const double *t)override;
+
+    //  bool setRefTorque(int j, double t)override;
+
+    //  bool getMotorTorqueParams(int j,  yarp::dev::MotorTorqueParameters *params) {return false;}
+
+    //  bool setMotorTorqueParams(int j,  const yarp::dev::MotorTorqueParameters params) {return
+    //  false;}
+
+    //  bool getTorque(int j, double *t)override;
+
+    //  bool getTorques(double *t)override;
+
+    //  bool getTorqueRange(int j, double *min, double *max)override;
+
+    //  bool getTorqueRanges(double *min, double *max)override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
@@ -327,4 +404,4 @@ private:
 } // namespace dev
 } // namespace yarp
 
-#endif // YARP_DEV_DS402_MOTION_CONTROL_H
+#endif // YARP_DEV_CIA402_MOTION_CONTROL_H

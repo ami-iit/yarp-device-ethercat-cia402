@@ -18,6 +18,8 @@
  *****************************************************************************************/
 
 #include "Ds402MotionControl.h"
+#include "Cia402StateMachine.h"
+#include "EthercatManager.h"
 
 // YARP
 #include <yarp/os/LogStream.h>
@@ -34,57 +36,16 @@
 #include <string_view>
 #include <vector>
 
-// Forward declarations for the process-data structs that each drive exposes.
-// TODO: move to a separate header file better if we can set if from configuratrion file
-#pragma pack(push, 1)
-struct FeedbackPDO // (= slave → master, also called *Tx*PDO)
-{
-    uint16_t Statusword;
-    int8_t OpModeDisplay;
-    int32_t PositionValue; // [encoder counts]
-    int32_t VelocityValue; // [rpm]
-    int16_t TorqueValue; // [0.1 Nm]
-    int32_t PositionErrorActualValue;
-    uint16_t AnalogInput1;
-    uint16_t AnalogInput2;
-    uint16_t AnalogInput3;
-    uint16_t AnalogInput4;
-    uint32_t TuningStatus;
-    uint32_t DigitalInputs;
-    uint32_t UserMISO;
-    uint32_t Timestamp;
-    int32_t PositionDemandInternalValue;
-    int32_t VelocityDemandValue;
-    int16_t TorqueDemand;
-};
-
-struct CommandPDO // (= master → slave, also called *Rx*PDO)
-{
-    uint16_t Controlword;
-    int8_t OpMode;
-    int16_t TargetTorque;
-    int32_t TargetPosition;
-    int32_t TargetVelocity;
-    int16_t TorqueOffset;
-    int32_t TuningCommand;
-    int32_t PhysicalOutputs;
-    int32_t BitMask;
-    int32_t UserMOSI;
-    int32_t VelocityOffset;
-};
-#pragma pack(pop)
-
 namespace yarp::dev
 {
-
-// Forward declarations expected by template code
-using RxPDO = CommandPDO; // outputs (master → slave)
-using TxPDO = FeedbackPDO; // inputs  (slave → master)
 
 struct Ds402MotionControl::Impl
 {
     // Human-readable name for log messages
     static constexpr std::string_view kClassName = "Ds402MotionControl";
+
+    // EtherCat manager
+    ::Cia402::EthercatManager ethercatManager;
 
     // Constants
     static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // 1 / DEG_PER_SEC_TO_RPM
@@ -104,9 +65,6 @@ struct Ds402MotionControl::Impl
     //--------------------------------------------------------------------------
     // Runtime bookkeeping
     //--------------------------------------------------------------------------
-    uint32_t expectedWkc{0}; // for fast I/O integrity check
-    std::vector<RxPDO*> rx; // one ptr per joint → command area
-    std::vector<TxPDO*> tx; // one ptr per joint → feedback area
     std::vector<uint32_t> encoderRes; // "counts per revolution" etc.
     std::vector<double> gearRatio; //  load-revs : motor-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
@@ -114,7 +72,7 @@ struct Ds402MotionControl::Impl
 
     struct VariablesReadFromMotors
     {
-        std::mutex mutex; // protect the variables in this structure from concurrent access
+        mutable std::mutex mutex; // protect the variables in this structure from concurrent access
         std::vector<double> motorEncoders; // for getMotorEncoders()
         std::vector<double> motorVelocities; // for getMotorVelocities()
         std::vector<double> motorAccelerations; // for getMotorAccelerations()
@@ -122,6 +80,8 @@ struct Ds402MotionControl::Impl
         std::vector<double> jointVelocities; // for getJointVelocities()
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> feedbackTime; // feedback time in seconds
+        std::vector<uint8_t> STO;
+        std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
 
         void resizeContainers(std::size_t numAxes)
@@ -134,10 +94,29 @@ struct Ds402MotionControl::Impl
             this->jointVelocities.resize(numAxes);
             this->jointAccelerations.resize(numAxes);
             this->jointNames.resize(numAxes);
+            this->STO.resize(numAxes);
+            this->SBC.resize(numAxes);
         }
     };
 
     VariablesReadFromMotors variables;
+
+    struct ControlModeState
+    {
+        std::vector<int> target; // what the user asked for
+        std::vector<int> active; // what the drive is really doing
+        mutable std::mutex mutex; // protects *both* vectors
+
+        void resize(std::size_t n, int initial = VOCAB_CM_IDLE)
+        {
+            target.assign(n, initial);
+            active = target;
+        }
+    };
+    ControlModeState controlModeState;
+
+    /* --------------- CiA-402 power-state machine ------------------------ */
+    std::vector<std::unique_ptr<Cia402::StateMachine>> sm;
 
     bool opRequested{false}; // true after the first run() call
 
@@ -169,83 +148,45 @@ struct Ds402MotionControl::Impl
     }
 
     //--------------------------------------------------------------------------
-    //  Build rx[] / tx[] vectors so that joint j → slave (firstSlave + j)
-    //--------------------------------------------------------------------------
-    bool buildJointIoPointers()
-    {
-        this->rx.resize(numAxes);
-        this->tx.resize(numAxes);
-
-        for (size_t j = 0; j < numAxes; ++j)
-        {
-            const int slaveIdx = firstSlave + static_cast<int>(j);
-
-            // Sanity-check: is the bus long enough?
-            if (slaveIdx > ec_slavecount)
-            {
-                yError("%s: joint %zu → slave %d (out of range)", kClassName.data(), j, slaveIdx);
-                return false;
-            }
-
-            // Optional: verify the name if the user gave one
-            if (!expectedName.empty()
-                && std::strcmp(ec_slave[slaveIdx].name, expectedName.c_str()) != 0)
-            {
-                yError("%: joint %zu → slave %d (%s) does not match expected name '%s'",
-                       kClassName.data(),
-                       j,
-                       slaveIdx,
-                       ec_slave[slaveIdx].name,
-                       expectedName.c_str());
-                return false;
-            }
-
-            // Set the pointers to the PDO areas
-            rx[j] = reinterpret_cast<RxPDO*>(ec_slave[slaveIdx].outputs);
-            tx[j] = reinterpret_cast<TxPDO*>(ec_slave[slaveIdx].inputs);
-            if (rx[j] == nullptr || tx[j] == nullptr)
-            {
-                yError("%s: joint %zu → slave %d has no PDOs", kClassName.data(), j, slaveIdx);
-                return false;
-            }
-        }
-        return true;
-    }
-
-    //--------------------------------------------------------------------------
     //  One-shot SDO reads – here we only fetch encoder resolutions
     //--------------------------------------------------------------------------
     bool readEncoderResolutions()
     {
-        this->encoderRes.resize(numAxes);
-        this->encoderResInverted.resize(numAxes);
+        encoderRes.resize(numAxes);
+        encoderResInverted.resize(numAxes);
 
         for (size_t j = 0; j < numAxes; ++j)
         {
             const int slaveIdx = firstSlave + static_cast<int>(j);
 
+            // ------------------------------------------------------------
+            // 1. Determine which encoder is active (hall vs quadrature)
+            // ------------------------------------------------------------
             uint8_t source = 0;
-            int sz = sizeof(source);
-            if (ec_SDOread(slaveIdx, 0x2012, 0x09, false, &sz, &source, EC_TIMEOUTRXM) <= 0)
+            auto err = this->ethercatManager.readSDO<uint8_t>(slaveIdx, 0x2012, 0x09, source);
+            if (err != ::Cia402::EthercatManager::Error::NoError)
             {
-                yError("Joint %s: cannot read encoder-source (0x2012:09)", kClassName.data());
+                yError("Joint %zu: cannot read encoder‑source (0x2012:09)", j);
                 return false;
             }
 
+            // ------------------------------------------------------------
+            // 2. Fetch the encoder resolution from the proper object
+            // ------------------------------------------------------------
             uint32_t res = 0;
-            sz = sizeof(res);
-            const uint16_t idx = (source == 1) ? 0x2110 : 0x2112; // hall vs. quadrature
-            if (ec_SDOread(slaveIdx, idx, 0x03, false, &sz, &res, EC_TIMEOUTRXM) <= 0)
+            const uint16_t idx = (source == 1) ? 0x2110 : 0x2112; // hall vs quadrature
+            err = this->ethercatManager.readSDO<uint32_t>(slaveIdx, idx, 0x03, res);
+            if (err != ::Cia402::EthercatManager::Error::NoError)
             {
-                yError("Joint %s: cannot read encoder-resolution (0x%04X:03)",
-                       kClassName.data(),
-                       idx);
+                yError("Joint %zu: cannot read encoder‑resolution (0x%04X:03)", j, idx);
                 return false;
             }
             this->encoderRes[j] = res;
         }
 
-        // 1. Invert the encoder resolutions for later use in getFeedback()
+        // ------------------------------------------------------------
+        // 3. Pre‑compute 1/res for fast feedback conversion
+        // ------------------------------------------------------------
         for (size_t j = 0; j < numAxes; ++j)
         {
             if (this->encoderRes[j] != 0)
@@ -271,53 +212,46 @@ struct Ds402MotionControl::Impl
      */
     bool readGearRatios()
     {
-        this->gearRatio.resize(numAxes);
-        this->gearRatioInv.resize(numAxes);
+        gearRatio.resize(numAxes);
+        gearRatioInv.resize(numAxes);
 
         for (size_t j = 0; j < numAxes; ++j)
         {
             const int slaveIdx = firstSlave + static_cast<int>(j);
 
-            uint32_t num = 1; // default numerator
-            uint32_t den = 1; // default denominator
-            int sz;
+            uint32_t num = 1U; // default numerator
+            uint32_t den = 1U; // default denominator
 
-            /* ---- numerator -------------------------------------------------- */
-            sz = sizeof(num);
-            if (ec_SDOread(slaveIdx, 0x6091, 0x01, false, &sz, &num, EC_TIMEOUTRXM) <= 0)
+            // ---- numerator ------------------------------------------------------
+            if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6091, 0x01, num)
+                != ::Cia402::EthercatManager::Error::NoError)
             {
-                yWarning("Joint %s: gear-ratio numerator not available (0x6091:01) → assume 1",
+                yWarning("Joint %s: gear‑ratio numerator not available (0x6091:01) → assume 1",
                          kClassName.data());
-                num = 1;
+                num = 1U;
             }
 
-            /* ---- denominator ------------------------------------------------ */
-            sz = sizeof(den);
-            if (ec_SDOread(slaveIdx, 0x6091, 0x02, false, &sz, &den, EC_TIMEOUTRXM) <= 0
-                || den == 0)
+            // ---- denominator ----------------------------------------------------
+            if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6091, 0x02, den)
+                    != ::Cia402::EthercatManager::Error::NoError
+                || den == 0U)
             {
-                yWarning("Joint %s: gear-ratio denominator not available/zero (0x6091:02) → assume "
+                yWarning("Joint %s: gear‑ratio denominator not available/zero (0x6091:02) → assume "
                          "1",
                          kClassName.data());
-                den = 1;
+                den = 1U;
             }
 
-            yInfo("Joint %s: gear-ratio %zu → %u : %u", kClassName.data(), j, num, den);
+            yInfo("Joint %s: gear‑ratio %zu → %u : %u", kClassName.data(), j, num, den);
 
-            /* ---- cache values ---------------------------------------------- */
-            this->gearRatio[j] = static_cast<double>(num) / static_cast<double>(den);
+            // ---- cache value ----------------------------------------------------
+            gearRatio[j] = static_cast<double>(num) / static_cast<double>(den);
         }
 
-        /* Pre-compute 1 / ratio for fast use elsewhere ----------------------- */
+        // Pre‑compute the inverse for fast use elsewhere -------------------------
         for (size_t j = 0; j < numAxes; ++j)
         {
-            if (this->gearRatio[j] != 0.0)
-            {
-                this->gearRatioInv[j] = 1.0 / this->gearRatio[j];
-            } else
-            {
-                this->gearRatioInv[j] = 0.0;
-            }
+            gearRatioInv[j] = (gearRatio[j] != 0.0) ? (1.0 / gearRatio[j]) : 0.0;
         }
 
         return true;
@@ -331,7 +265,8 @@ struct Ds402MotionControl::Impl
         // 2. Read & print encoder feedback
         for (size_t j = 0; j < this->numAxes; ++j)
         {
-            const auto& fb = *(this->tx[j]);
+            const auto& fb
+                = *(this->ethercatManager.getTxPDO(this->firstSlave + static_cast<int>(j)));
             const double encoderResInv = this->encoderResInverted[j];
 
             this->variables.motorEncoders[j] = static_cast<double>(fb.PositionValue)
@@ -345,7 +280,8 @@ struct Ds402MotionControl::Impl
             // the acceleration is not available in the PDO
             this->variables.motorAccelerations[j] = 0.0;
 
-            // TODO we assume that we have only one encoder so the joint position and velocity is
+            // TODO we assume that we have only one encoder so the joint position and
+            // velocity is
             // computed by using the gear ratio
             this->variables.jointPositions[j]
                 = this->variables.motorEncoders[j] * this->gearRatioInv[j];
@@ -354,11 +290,86 @@ struct Ds402MotionControl::Impl
             this->variables.jointAccelerations[j]
                 = this->variables.motorAccelerations[j] * this->gearRatioInv[j];
 
+            this->variables.STO[j] = fb.STO;
+            this->variables.SBC[j] = fb.SBC;
+
             this->variables.feedbackTime[j]
                 = static_cast<double>(fb.Timestamp) * MICROSECONDS_TO_SECONDS; // [μs] → [s]
         }
 
         return true;
+    }
+
+    //--------------------------------------------------------------------------
+    //  YARP ➜ CiA-402   (Op-mode sent in RxPDO::OpMode)
+    //--------------------------------------------------------------------------
+    static int yarpToCiaOp(int cm)
+    {
+        using namespace yarp::dev;
+        switch (cm)
+        {
+        case VOCAB_CM_IDLE:
+        case VOCAB_CM_FORCE_IDLE:
+            return 0; // “No mode” → disables the power stage
+        case VOCAB_CM_POSITION:
+            return 1; // Profile-Position (PP)
+        case VOCAB_CM_VELOCITY:
+            return 9; // Cyclic-Synch-Velocity (CSV)
+        case VOCAB_CM_TORQUE:
+        case VOCAB_CM_CURRENT:
+            return 10; // Cyclic-Synch-Torque  (CST)
+        case VOCAB_CM_POSITION_DIRECT:
+            return 8; // Cyclic-Synch-Position (CSP)
+        default:
+            return -1; // not supported
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    //  CiA-402 ➜ YARP   (decode for diagnostics)
+    //--------------------------------------------------------------------------
+    static int ciaOpToYarp(int op)
+    {
+        using namespace yarp::dev;
+        switch (op)
+        {
+        case 0:
+            return VOCAB_CM_IDLE;
+        case 1:
+            return VOCAB_CM_POSITION;
+        case 3:
+            return VOCAB_CM_VELOCITY; // PP-vel still possible
+        case 8:
+            return VOCAB_CM_POSITION_DIRECT;
+        case 9:
+            return VOCAB_CM_VELOCITY;
+        case 10:
+            return VOCAB_CM_TORQUE;
+        default:
+            return VOCAB_CM_UNKNOWN;
+        }
+    }
+
+    static std::string_view yarpToString(int op)
+    {
+        using namespace yarp::dev;
+        switch (op)
+        {
+        case VOCAB_CM_IDLE:
+            return "VOCAB_CM_IDLE";
+        case VOCAB_CM_POSITION:
+            return "VOCAB_CM_POSITION";
+        case VOCAB_CM_VELOCITY:
+            return "VOCAB_CM_VELOCITY";
+        case VOCAB_CM_TORQUE:
+            return "VOCAB_CM_TORQUE";
+        case VOCAB_CM_CURRENT:
+            return "VOCAB_CM_CURRENT";
+        case VOCAB_CM_POSITION_DIRECT:
+            return "VOCAB_CM_POSITION_DIRECT";
+        default:
+            return "UNKNOWN";
+        }
     }
 
 }; // struct Impl
@@ -385,8 +396,9 @@ Ds402MotionControl::~Ds402MotionControl() = default;
 
 bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 {
-
-    //  0. Read parameters from the YARP xml file
+    // ---------------------------------------------------------------------
+    // 0. Parse YARP parameters
+    // ---------------------------------------------------------------------
     if (!cfg.check("ifname") || !cfg.find("ifname").isString())
     {
         yError("%s: 'ifname' parameter is not a string", Impl::kClassName.data());
@@ -401,122 +413,86 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
     m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
     if (cfg.check("expected_slave_name"))
-    {
         m_impl->expectedName = cfg.find("expected_slave_name").asString();
-    }
 
     const std::string ifname = cfg.find("ifname").asString();
-    yInfo("%s: opening EtherCAT master on %s", Impl::kClassName.data(), ifname.c_str());
+    yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
 
-    //  1. ec_init()  — raw Ethernet socket + internal buffers
-    if (ec_init(ifname.c_str()) <= 0)
+    // ---------------------------------------------------------------------
+    // 1. Initialise the EtherCAT network via the high‑level manager
+    // ---------------------------------------------------------------------
+
+    const auto ecErr = m_impl->ethercatManager.init(ifname);
+    if (ecErr != ::Cia402::EthercatManager::Error::NoError)
     {
-        yError("%s: ec_init() failed", Impl::kClassName.data());
+        yError("%s: EtherCAT init failed (%d)", Impl::kClassName.data(), static_cast<int>(ecErr));
         return false;
     }
 
-    //  2. Scan the ring -> PRE-OP
-    if (ec_config_init(false /*fresh scan*/) <= 0)
-    {
-        yError("%s: ec_config_init() failed", Impl::kClassName.data());
-        ec_close();
-        return false;
-    }
-    yInfo("%s: found %d slaves", Impl::kClassName.data(), ec_slavecount);
+    yInfo("%s: %d slaves detected, OPERATIONAL, WKC=%d",
+          Impl::kClassName.data(),
+          ec_slavecount,
+          m_impl->ethercatManager.getWorkingCounter());
 
-    //  3. Build process image + enable distributed clocks (if any)
-    if (ec_config_map(m_impl->ioMap) <= 0)
+    // ---------------------------------------------------------------------
+    // 2. Idle every drive (switch‑on disabled, no mode selected)
+    // ---------------------------------------------------------------------
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        yError("%s: ec_config_map() failed", Impl::kClassName.data());
-        ec_close();
-        return false;
-    }
-    ec_configdc();
-
-    //  4. Wait until the whole ring reaches SAFE-OP (inputs valid)
-    constexpr std::size_t allSlaves = 0; // 0 = all slaves
-    ec_statecheck(allSlaves, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4);
-    if (ec_slave[0].state != EC_STATE_SAFE_OP)
-    {
-        yError("%s: ring failed to reach SAFE-OP", Impl::kClassName.data());
-        m_impl->printAlStatusForAllSlaves();
-        ec_close();
-        return false;
-    }
-
-    //  5. Pre-compute expected WKC for sanity checks in run()
-    m_impl->expectedWkc = (ec_group[0].outputsWKC * 2) + ec_group[0].inputsWKC;
-    yInfo("%s: expected WKC = %d", Impl::kClassName.data(), m_impl->expectedWkc);
-
-    //  6. Ask for OPERATIONAL and wait (max 10 s)
-    {
-        for (std::size_t slave_id = 0; slave_id < ec_slavecount; ++slave_id)
+        const int slave = m_impl->firstSlave + static_cast<int>(j);
+        auto* rx = m_impl->ethercatManager.getRxPDO(slave);
+        if (!rx)
         {
-            ec_slave[slave_id].state = EC_STATE_OPERATIONAL;
+            yError("%s: invalid slave index %d", Impl::kClassName.data(), slave);
+            return false;
         }
-
-        // send one valid process data to make outputs in slaves happy
-        ec_send_processdata();
-        ec_receive_processdata(EC_TIMEOUTRET);
-        // request OP state for all slaves
-        ec_writestate(0);
-
-        size_t attempts = 200; // 200 × 50 ms = 10 s
-        constexpr int timeout = 50'000; // 50 ms -> 50'000 μs
-        do
-        {
-            ec_send_processdata();
-            ec_receive_processdata(EC_TIMEOUTRET);
-            ec_statecheck(allSlaves, EC_STATE_OPERATIONAL, timeout);
-        } while (attempts-- && (ec_slave[0].state != EC_STATE_OPERATIONAL));
+        rx->Controlword = 0x0000;
+        rx->OpMode = 0;
     }
 
-    if (ec_slave[0].state != EC_STATE_OPERATIONAL)
-    {
-        yError("%s: ring failed to reach OPERATIONAL", Impl::kClassName.data());
-        m_impl->printAlStatusForAllSlaves();
-        ec_close();
-        return false;
-    }
-    yInfo("%s: ring is OPERATIONAL", Impl::kClassName.data());
+    // Send one frame so the outputs take effect
+    m_impl->ethercatManager.sendReceive();
 
-    //  7. Map joints → PDO areas
-    if (!m_impl->buildJointIoPointers())
-    {
-        ec_close();
-        return false;
-    }
-
-    //  8. Fetch static SDO parameters (encoder resolutions, gear ratios)
+    // ---------------------------------------------------------------------
+    // 3. Fetch static SDO parameters (encoder resolutions, gear ratios)
+    // ---------------------------------------------------------------------
     if (!m_impl->readEncoderResolutions())
     {
-        ec_close();
+        yError("%s: failed to read encoder resolutions", Impl::kClassName.data());
         return false;
     }
     if (!m_impl->readGearRatios())
     {
-        ec_close();
+        yError("%s: failed to read gear ratios", Impl::kClassName.data());
         return false;
     }
-
-    // print the SDO parameters
-
-    //  9. Start the PeriodicThread (this object) → real-time loop
-    if (!this->start())
-    {
-        yError("%s: failed to start the thread", Impl::kClassName.data());
-        ec_close();
-        return false;
-    }
-
-    // 10. Resize the containers
+    // ---------------------------------------------------------------------
+    // 4. Create YARP‑level containers and CiA‑402 state machines
+    // ---------------------------------------------------------------------
     m_impl->variables.resizeContainers(m_impl->numAxes);
+    m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
+    m_impl->sm.resize(m_impl->numAxes);
 
-    m_impl->fillJointNames(); // fill the joint names
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        m_impl->sm[j] = std::make_unique<Cia402::StateMachine>();
+        m_impl->sm[j]->reset();
+    }
+
+    m_impl->fillJointNames();
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
           m_impl->numAxes);
+
+    // ---------------------------------------------------------------------
+    // 5. Launch the device thread
+    // ---------------------------------------------------------------------
+    if (!this->start())
+    {
+        yError("%s: failed to start the thread", Impl::kClassName.data());
+        return false;
+    }
 
     return true;
 }
@@ -525,7 +501,6 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 bool Ds402MotionControl::close()
 {
     this->stop(); // PeriodicThread → graceful stop
-    ec_close();
     yInfo("%s: EtheCAT master closed", Impl::kClassName.data());
     return true;
 }
@@ -533,34 +508,90 @@ bool Ds402MotionControl::close()
 //  run()  —  gets called every period (real-time control loop)
 void Ds402MotionControl::run()
 {
-    // 0. Request OP on first iteration --------------------------------------
-    if (!m_impl->opRequested)
+    /* ------------------------------------------------------------------
+     * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
+     * ----------------------------------------------------------------*/
     {
-        // 0.1. Check if the ring is still OPERATIONAL
-        std::memset(m_impl->ioMap, 0, sizeof(m_impl->ioMap));
-        ec_send_processdata();
-        ec_receive_processdata(EC_TIMEOUTRET);
-        for (std::size_t i = 1; i <= ec_slavecount; ++i)
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
-            ec_slave[i].state = EC_STATE_OPERATIONAL;
+            const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
+            ::Cia402::RxPDO* rx = m_impl->ethercatManager.getRxPDO(slaveIdx);
+            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
+
+            const int tgt = m_impl->controlModeState.target[j];
+
+            // /* ------------ FORCE-IDLE  (fault-reset + idle) ------------- */
+            // if (tgt == VOCAB_CM_FORCE_IDLE)
+            // {
+            //     Cia402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 +
+            //     OpMode
+            //         // 0
+            //         rx->Controlword
+            //         = cmd.controlword;
+            //     if (cmd.writeOpMode)
+            //     {
+            //         rx->OpMode = cmd.opMode;
+            //     }
+            //     continue;
+            // }
+
+            /* ------------ normal control-mode path --------------------- */
+            const int8_t opReq = Impl::yarpToCiaOp(tgt); // −1 = unsupported
+            if (opReq < 0)
+            { // ignore unknown modes
+                continue;
+            }
+
+            Cia402::StateMachine::Command cmd
+                = m_impl->sm[j]->update(tx->Statusword, tx->OpModeDisplay, opReq);
+
+            rx->Controlword = cmd.controlword;
+            if (cmd.writeOpMode)
+            {
+                rx->OpMode = cmd.opMode;
+            }
         }
-        ec_writestate(0);
-        m_impl->opRequested = true;
-        yInfo("%s: requested OPERATIONAL state. This is the first run() call.",
-              Impl::kClassName.data());
-        return; // skip one cycle to let drives switch
-    }
+    } /* mutex unlocked – PDOs are now ready to send */
 
-    // 1. Cyclic exchange -----------------------------------------------------
-    ec_send_processdata();
-    int wkc = ec_receive_processdata(EC_TIMEOUTRET);
-
-    if (wkc < static_cast<int>(m_impl->expectedWkc))
+    // /* ------------------------------------------------------------------
+    //  * 2.  CYCLIC EXCHANGE  (send outputs / read inputs)
+    //  * ----------------------------------------------------------------*/
+    if (m_impl->ethercatManager.sendReceive() != ::Cia402::EthercatManager::Error::NoError)
     {
-        yWarning("%s: WKC %d < expected %d", Impl::kClassName.data(), wkc, m_impl->expectedWkc);
+        yError("%s: sendReceive() failed", Impl::kClassName.data());
     }
 
-    // 2. Read feedback from the drives --------------------------------------
+    // /* ------------------------------------------------------------------
+    //  * 3.  DIAGNOSTICS  (fill active[] according to feedback)
+    //  * ----------------------------------------------------------------*/
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
+            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
+            const uint8_t SBC = tx->SBC;
+            const uint8_t STO = tx->STO;
+
+            if (SBC == 1 || STO == 1)
+            {
+                m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
+                m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
+
+                continue;
+            }
+
+            m_impl->controlModeState.active[j]
+                = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
+        }
+    }
+
+    // /* ------------------------------------------------------------------
+    //  * 4.  COPY ENCODERS & OTHER FEEDBACK
+    //  * ----------------------------------------------------------------*/
     m_impl->readFeedback();
 }
 
@@ -977,6 +1008,127 @@ bool Ds402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
     }
     type = yarp::dev::JointTypeEnum::VOCAB_JOINTTYPE_REVOLUTE; // TODO: add support for linear
                                                                // joints
+    return true;
+}
+
+// -------------------------- IControlMode ------------------------------------
+bool Ds402MotionControl::getControlMode(int j, int* mode)
+{
+    if (mode == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        *mode = m_impl->controlModeState.active[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getControlModes(int* modes)
+{
+    if (modes == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+        std::memcpy(modes, m_impl->controlModeState.active.data(), m_impl->numAxes * sizeof(int));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getControlModes(const int n, const int* joints, int* modes)
+{
+    if (modes == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n; ++k)
+        {
+            if (joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+                return false;
+            }
+            modes[k] = m_impl->controlModeState.active[joints[k]];
+        }
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setControlMode(const int j, const int mode)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    if (Impl::yarpToCiaOp(mode) < 0)
+    {
+        yError("%s: control mode %d not supported", Impl::kClassName.data(), mode);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    m_impl->controlModeState.target[j] = mode;
+    return true;
+}
+
+bool Ds402MotionControl::setControlModes(const int n, const int* joints, int* modes)
+{
+    if (modes == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        if (joints[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+            return false;
+        }
+        m_impl->controlModeState.target[joints[k]] = modes[k];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setControlModes(int* modes)
+{
+    if (modes == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
+    std::memcpy(m_impl->controlModeState.target.data(), modes, m_impl->numAxes * sizeof(int));
     return true;
 }
 
