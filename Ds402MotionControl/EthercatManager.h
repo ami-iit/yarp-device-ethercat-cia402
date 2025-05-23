@@ -4,13 +4,15 @@
 #ifndef YARP_DEV_CIA402_ETHERCAT_MANAGER_H
 #define YARP_DEV_CIA402_ETHERCAT_MANAGER_H
 
-#include "ethercat.h"
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+// SOEM
+#include <ethercat.h>
 
 namespace Cia402
 {
