@@ -68,16 +68,15 @@ Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t o
     }
 
     // ///////////////////////////////// Dynamic Op‑Mode switch //////////////////////////////
-    if (state == State::OperationEnabled && opReq != m_impl->activeOpEcho)
+    if (state == State::OperationEnabled)
     {
-        // Seamless mode switch: keep the power stage on, just write 0x6060.
-        return {CW_ENABLE_OP, opReq, true};
-    }
-
-    if (state == State::OperationEnabled && opReq == m_impl->activeOpEcho)
-    {
-        // Seamless mode switch: keep the power stage on, just write 0x6060.
-        return {CW_ENABLE_OP, opReq, true};
+        if (opReq != m_impl->activeOpEcho)
+        {
+            return {CW_ENABLE_OP, opReq, true};
+        } else
+        {
+            return {CW_ENABLE_OP, opReq, false}; // keep OpMode
+        }
     }
 
     // ///////////////////////////////// Classical power‑cycle path //////////////////////////
