@@ -1342,7 +1342,7 @@ bool Ds402MotionControl::setRefTorques(const double* t)
         std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
         std::memcpy(m_impl->setPoints.jointTorques.data(), t, m_impl->numAxes * sizeof(double));
     }
-    return false;
+    return true;
 }
 
 bool Ds402MotionControl::getTorqueRange(int j, double* min, double* max)
