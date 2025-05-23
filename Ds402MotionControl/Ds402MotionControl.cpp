@@ -1328,7 +1328,7 @@ bool Ds402MotionControl::setRefTorque(int j, double t)
         std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
         m_impl->setPoints.jointTorques[j] = t;
     }
-    return false;
+    return true;
 }
 
 bool Ds402MotionControl::setRefTorques(const double* t)
