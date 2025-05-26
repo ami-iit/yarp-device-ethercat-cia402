@@ -123,16 +123,26 @@ struct Ds402MotionControl::Impl
     {
         std::mutex mutex; // protects the following vectors
         std::vector<double> jointTorques; // for setTorque()
+        std::vector<double> jointVelocities; // for velocityMove() or joint velocity commands
 
         void resize(std::size_t n)
         {
             jointTorques.resize(n);
+            jointVelocities.resize(n);
         }
 
         void reset()
         {
             std::lock_guard<std::mutex> lock(this->mutex);
             std::fill(this->jointTorques.begin(), this->jointTorques.end(), 0.0);
+            std::fill(this->jointVelocities.begin(), this->jointVelocities.end(), 0.0);
+        }
+
+        void reset(int axis)
+        {
+            std::lock_guard<std::mutex> lock(this->mutex);
+            this->jointTorques[axis] = 0.0;
+            this->jointVelocities[axis] = 0.0;
         }
     };
 
@@ -322,11 +332,11 @@ struct Ds402MotionControl::Impl
             // max is given in per thousandth of rated torque.
             this->maxTorque[j] = max / 1000.0 * this->ratedTorque[j];
 
-
-            yInfo("Joint %s: rated torque %zu → %.2f Nm", kClassName.data(), j,
-                   this->ratedTorque[j]);
-            yInfo("Joint %s: max torque %zu → %.2f Nm", kClassName.data(), j,
-                   this->maxTorque[j]);
+            yInfo("Joint %s: rated torque %zu → %.2f Nm",
+                  kClassName.data(),
+                  j,
+                  this->ratedTorque[j]);
+            yInfo("Joint %s: max torque %zu → %.2f Nm", kClassName.data(), j, this->maxTorque[j]);
         }
 
         return true;
@@ -348,6 +358,14 @@ struct Ds402MotionControl::Impl
                 int16_t torque = static_cast<int16_t>(this->setPoints.jointTorques[j]
                                                       / this->ratedTorque[j] * 1000.0);
                 rxPDO->TargetTorque = torque;
+            }
+
+            if (opMode == VOCAB_CM_VELOCITY)
+            {
+                // the velocity is in rpm
+                int32_t vel = static_cast<int32_t>(this->setPoints.jointVelocities[j]
+                                                   * this->gearRatio[j] * DEG_PER_SEC_TO_RPM);
+                rxPDO->TargetVelocity = vel;
             }
         }
         return true;
@@ -699,15 +717,16 @@ void Ds402MotionControl::run()
             {
                 m_impl->controlModeState.active[j] = VOCAB_CM_IDLE;
                 m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
-
-                // we reset the setpoints to 0.0
-                m_impl->setPoints.reset();
-
-                continue;
+            } else
+            {
+                m_impl->controlModeState.active[j]
+                    = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
             }
 
-            m_impl->controlModeState.active[j]
-                = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
+            if (m_impl->controlModeState.active[j] == VOCAB_CM_IDLE)
+            {
+                m_impl->setPoints.reset(j);
+            }
         }
     }
 }
@@ -1376,6 +1395,256 @@ bool Ds402MotionControl::getTorqueRanges(double* min, double* max)
     {
         min[j] = -m_impl->maxTorque[j];
         max[j] = m_impl->maxTorque[j];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::velocityMove(int j, double spd)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        m_impl->setPoints.jointVelocities[j] = spd;
+    }
+    return true;
+}
+
+bool Ds402MotionControl::velocityMove(const double* spds)
+{
+    if (spds == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        std::memcpy(m_impl->setPoints.jointVelocities.data(),
+                    spds,
+                    m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getRefVelocity(const int joint, double* vel)
+{
+    if (vel == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (joint >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), joint);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        *vel = m_impl->setPoints.jointVelocities[joint];
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getRefVelocities(double* spds)
+{
+    if (spds == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        std::memcpy(spds,
+                    m_impl->setPoints.jointVelocities.data(),
+                    m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::getRefVelocities(const int n_joint, const int* joints, double* vels)
+{
+    if (vels == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n_joint);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        for (int k = 0; k < n_joint; ++k)
+        {
+            if (joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+                return false;
+            }
+            vels[k] = m_impl->setPoints.jointVelocities[joints[k]];
+        }
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setRefAcceleration(int j, double acc)
+{
+    // no operation
+    return false;
+}
+
+bool Ds402MotionControl::setRefAccelerations(const double* accs)
+{
+    // no operation
+    return false;
+}
+
+bool Ds402MotionControl::getRefAcceleration(int j, double* acc)
+{
+    if (acc == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    *acc = 0.0; // no operation
+    return true;
+}
+
+bool Ds402MotionControl::getRefAccelerations(double* accs)
+{
+    if (accs == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // no operation
+    return true;
+}
+
+bool Ds402MotionControl::stop(int j)
+{
+    if (j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        m_impl->setPoints.jointVelocities[j] = 0.0;
+    }
+    return true;
+}
+
+bool Ds402MotionControl::stop()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        std::memset(m_impl->setPoints.jointVelocities.data(), 0, m_impl->numAxes * sizeof(double));
+    }
+    return true;
+}
+
+bool Ds402MotionControl::velocityMove(const int n_joint, const int* joints, const double* spds)
+{
+    if (spds == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n_joint);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        for (int k = 0; k < n_joint; ++k)
+        {
+            if (joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+                return false;
+            }
+            m_impl->setPoints.jointVelocities[joints[k]] = spds[k];
+        }
+    }
+    return true;
+}
+
+bool Ds402MotionControl::setRefAccelerations(const int n_joint,
+                                             const int* joints,
+                                             const double* accs)
+{
+    if (accs == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n_joint);
+        return false;
+    }
+
+    // no operation
+    return true;
+}
+
+bool Ds402MotionControl::getRefAccelerations(const int n_joint, const int* joints, double* accs)
+{
+    if (accs == nullptr || joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n_joint);
+        return false;
+    }
+
+    std::memset(accs, 0, n_joint * sizeof(double)); // no operation
+    return true;
+}
+
+bool Ds402MotionControl::stop(const int n_joint, const int* joints)
+{
+    if (joints == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yError("%s: invalid number of joints %d", Impl::kClassName.data(), n_joint);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+        for (int k = 0; k < n_joint; ++k)
+        {
+            if (joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+                return false;
+            }
+            m_impl->setPoints.jointVelocities[joints[k]] = 0.0;
+        }
     }
     return true;
 }
