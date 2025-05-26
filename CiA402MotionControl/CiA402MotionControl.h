@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef YARP_DEV_CiA402_MOTION_CONTROL_H
-#define YARP_DEV_CiA402_MOTION_CONTROL_H
+#ifndef YARP_DEV_CIA402_MOTION_CONTROL_H
+#define YARP_DEV_CIA402_MOTION_CONTROL_H
 
 #include <memory>
 #include <string>
