@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //
-//  Cia402StateMachine                                                           │
+//  CiA402StateMachine                                                           │
 //
 //  A *header‑only* helper that drives the CiA‑402 power‑state machine and the
 //  “dynamic Op‑Mode switching” logic for a single EtherCAT drive.
 //
 //  Usage (pseudo‑code inside your cyclic task)
 //
-//      Cia402StateMachine sm;
+//      CiA402StateMachine sm;
 //      ...
 //      sm.setRequestedOpMode(ciaOpValue);          // whenever the user changes mode
 //      auto cmd = sm.update(tx.Statusword, tx.OpModeDisplay);
@@ -23,13 +23,13 @@
 //  before sending the next control‑word.
 //
 
-#ifndef YARP_DEV_CIA402_STATE_MACHINE_H
-#define YARP_DEV_CIA402_STATE_MACHINE_H
+#ifndef YARP_DEV_CiA402_STATE_MACHINE_H
+#define YARP_DEV_CiA402_STATE_MACHINE_H
 
 #include <memory>
 #include <string_view>
 
-namespace Cia402
+namespace CiA402
 {
 
 enum class State : uint8_t
@@ -167,6 +167,6 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace Cia402
+} // namespace CiA402
 
-#endif // YARP_DEV_CIA402_STATE_MACHINE_H
+#endif // YARP_DEV_CiA402_STATE_MACHINE_H

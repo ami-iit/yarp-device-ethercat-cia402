@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 /******************************************************************************************
- * Ds402MotionControl.cpp                                                                 *
+ * CiA402MotionControl.cpp                                                                 *
  *                                                                                        *
  * This file shows implement a YARP DeviceDriver that talks to a ring of                  *
  * CiA-402 EtherCAT drives via SOEM.                                                      *
@@ -17,8 +17,8 @@
  *  • Added lots of #include-s and forward declarations so the file is self-contained.    *
  *****************************************************************************************/
 
-#include "Ds402MotionControl.h"
-#include "Cia402StateMachine.h"
+#include "CiA402MotionControl.h"
+#include "CiA402StateMachine.h"
 #include "EthercatManager.h"
 
 // YARP
@@ -39,13 +39,13 @@
 namespace yarp::dev
 {
 
-struct Ds402MotionControl::Impl
+struct CiA402MotionControl::Impl
 {
     // Human-readable name for log messages
-    static constexpr std::string_view kClassName = "Ds402MotionControl";
+    static constexpr std::string_view kClassName = "CiA402MotionControl";
 
     // EtherCat manager
-    ::Cia402::EthercatManager ethercatManager;
+    ::CiA402::EthercatManager ethercatManager;
 
     // Constants
     static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // 1 / DEG_PER_SEC_TO_RPM
@@ -149,7 +149,7 @@ struct Ds402MotionControl::Impl
     SetPoints setPoints;
 
     /* --------------- CiA-402 power-state machine ------------------------ */
-    std::vector<std::unique_ptr<Cia402::StateMachine>> sm;
+    std::vector<std::unique_ptr<CiA402::StateMachine>> sm;
 
     bool opRequested{false}; // true after the first run() call
 
@@ -197,7 +197,7 @@ struct Ds402MotionControl::Impl
             // ------------------------------------------------------------
             uint8_t source = 0;
             auto err = this->ethercatManager.readSDO<uint8_t>(slaveIdx, 0x2012, 0x09, source);
-            if (err != ::Cia402::EthercatManager::Error::NoError)
+            if (err != ::CiA402::EthercatManager::Error::NoError)
             {
                 yError("Joint %zu: cannot read encoder‑source (0x2012:09)", j);
                 return false;
@@ -209,7 +209,7 @@ struct Ds402MotionControl::Impl
             uint32_t res = 0;
             const uint16_t idx = (source == 1) ? 0x2110 : 0x2112; // hall vs quadrature
             err = this->ethercatManager.readSDO<uint32_t>(slaveIdx, idx, 0x03, res);
-            if (err != ::Cia402::EthercatManager::Error::NoError)
+            if (err != ::CiA402::EthercatManager::Error::NoError)
             {
                 yError("Joint %zu: cannot read encoder‑resolution (0x%04X:03)", j, idx);
                 return false;
@@ -257,7 +257,7 @@ struct Ds402MotionControl::Impl
 
             // ---- numerator ------------------------------------------------------
             if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6091, 0x01, num)
-                != ::Cia402::EthercatManager::Error::NoError)
+                != ::CiA402::EthercatManager::Error::NoError)
             {
                 yWarning("Joint %s: gear‑ratio numerator not available (0x6091:01) → assume 1",
                          kClassName.data());
@@ -266,7 +266,7 @@ struct Ds402MotionControl::Impl
 
             // ---- denominator ----------------------------------------------------
             if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6091, 0x02, den)
-                    != ::Cia402::EthercatManager::Error::NoError
+                    != ::CiA402::EthercatManager::Error::NoError
                 || den == 0U)
             {
                 yWarning("Joint %s: gear‑ratio denominator not available/zero (0x6091:02) → assume "
@@ -307,7 +307,7 @@ struct Ds402MotionControl::Impl
 
             uint32_t rated = 0;
             if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6076, 0x00, rated)
-                != ::Cia402::EthercatManager::Error::NoError)
+                != ::CiA402::EthercatManager::Error::NoError)
             {
                 yError("Joint %s: cannot read rated torque (0x6076:00)", kClassName.data());
                 return false;
@@ -323,7 +323,7 @@ struct Ds402MotionControl::Impl
 
             uint16_t max = 0;
             if (ethercatManager.readSDO<uint16_t>(slaveIdx, 0x6072, 0x00, max)
-                != ::Cia402::EthercatManager::Error::NoError)
+                != ::CiA402::EthercatManager::Error::NoError)
             {
                 yError("Joint %s: cannot read max torque (0x6072:00)", kClassName.data());
                 return false;
@@ -491,15 +491,15 @@ struct Ds402MotionControl::Impl
 
 }; // struct Impl
 
-//  Ds402MotionControl  —  ctor / dtor
+//  CiA402MotionControl  —  ctor / dtor
 
-Ds402MotionControl::Ds402MotionControl(double period, yarp::os::ShouldUseSystemClock useSysClock)
+CiA402MotionControl::CiA402MotionControl(double period, yarp::os::ShouldUseSystemClock useSysClock)
     : yarp::os::PeriodicThread(period, useSysClock, yarp::os::PeriodicThreadClock::Absolute)
     , m_impl(std::make_unique<Impl>())
 {
 }
 
-Ds402MotionControl::Ds402MotionControl()
+CiA402MotionControl::CiA402MotionControl()
     : yarp::os::PeriodicThread(0.001 /*1 kHz*/,
                                yarp::os::ShouldUseSystemClock::Yes,
                                yarp::os::PeriodicThreadClock::Absolute)
@@ -507,11 +507,11 @@ Ds402MotionControl::Ds402MotionControl()
 {
 }
 
-Ds402MotionControl::~Ds402MotionControl() = default;
+CiA402MotionControl::~CiA402MotionControl() = default;
 
 //  open()  —  bring the ring to OPERATIONAL and start the cyclic thread
 
-bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
+bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 {
     // ---------------------------------------------------------------------
     // 0. Parse YARP parameters
@@ -540,7 +540,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
     // ---------------------------------------------------------------------
 
     const auto ecErr = m_impl->ethercatManager.init(ifname);
-    if (ecErr != ::Cia402::EthercatManager::Error::NoError)
+    if (ecErr != ::CiA402::EthercatManager::Error::NoError)
     {
         yError("%s: EtherCAT init failed (%d)", Impl::kClassName.data(), static_cast<int>(ecErr));
         return false;
@@ -602,7 +602,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        m_impl->sm[j] = std::make_unique<Cia402::StateMachine>();
+        m_impl->sm[j] = std::make_unique<CiA402::StateMachine>();
         m_impl->sm[j]->reset();
     }
 
@@ -625,7 +625,7 @@ bool Ds402MotionControl::open(yarp::os::Searchable& cfg)
 }
 
 //  close()  —  stop the thread & release the NIC
-bool Ds402MotionControl::close()
+bool CiA402MotionControl::close()
 {
     this->stop(); // PeriodicThread → graceful stop
     yInfo("%s: EtheCAT master closed", Impl::kClassName.data());
@@ -633,7 +633,7 @@ bool Ds402MotionControl::close()
 }
 
 //  run()  —  gets called every period (real-time control loop)
-void Ds402MotionControl::run()
+void CiA402MotionControl::run()
 {
     /* ------------------------------------------------------------------
      * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
@@ -644,15 +644,15 @@ void Ds402MotionControl::run()
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
             const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
-            ::Cia402::RxPDO* rx = m_impl->ethercatManager.getRxPDO(slaveIdx);
-            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
+            ::CiA402::RxPDO* rx = m_impl->ethercatManager.getRxPDO(slaveIdx);
+            ::CiA402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
 
             const int tgt = m_impl->controlModeState.target[j];
 
             // /* ------------ FORCE-IDLE  (fault-reset + idle) ------------- */
             // if (tgt == VOCAB_CM_FORCE_IDLE)
             // {
-            //     Cia402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 +
+            //     CiA402::StateMachine::Command cmd = m_impl->sm[j]->faultReset(); // 0x0080 +
             //     OpMode
             //         // 0
             //         rx->Controlword
@@ -671,7 +671,7 @@ void Ds402MotionControl::run()
                 continue;
             }
 
-            Cia402::StateMachine::Command cmd
+            CiA402::StateMachine::Command cmd
                 = m_impl->sm[j]->update(tx->Statusword, tx->OpModeDisplay, opReq);
 
             rx->Controlword = cmd.controlword;
@@ -690,7 +690,7 @@ void Ds402MotionControl::run()
     /* ------------------------------------------------------------------
      * 3.  CYCLIC EXCHANGE  (send outputs / read inputs)
      * ----------------------------------------------------------------*/
-    if (m_impl->ethercatManager.sendReceive() != ::Cia402::EthercatManager::Error::NoError)
+    if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
     {
         yError("%s: sendReceive() failed", Impl::kClassName.data());
     }
@@ -709,7 +709,7 @@ void Ds402MotionControl::run()
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
             const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
-            ::Cia402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
+            ::CiA402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
             const uint8_t SBC = tx->SBC;
             const uint8_t STO = tx->STO;
 
@@ -735,7 +735,7 @@ void Ds402MotionControl::run()
 // ----------------- IMotorEncoders --------------
 // -----------------------------------------------
 
-bool Ds402MotionControl::getNumberOfMotorEncoders(int* num)
+bool CiA402MotionControl::getNumberOfMotorEncoders(int* num)
 {
     if (num == nullptr)
     {
@@ -746,25 +746,25 @@ bool Ds402MotionControl::getNumberOfMotorEncoders(int* num)
     return true;
 }
 
-bool Ds402MotionControl::resetMotorEncoder(int m)
+bool CiA402MotionControl::resetMotorEncoder(int m)
 {
     yError("%s: resetMotorEncoder() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::resetMotorEncoders()
+bool CiA402MotionControl::resetMotorEncoders()
 {
     yError("%s: resetMotorEncoders() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::setMotorEncoderCountsPerRevolution(int m, const double cpr)
+bool CiA402MotionControl::setMotorEncoderCountsPerRevolution(int m, const double cpr)
 {
     yError("%s: setMotorEncoderCountsPerRevolution() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
+bool CiA402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
 {
     if (cpr == nullptr)
     {
@@ -785,19 +785,19 @@ bool Ds402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
     return true;
 }
 
-bool Ds402MotionControl::setMotorEncoder(int m, const double val)
+bool CiA402MotionControl::setMotorEncoder(int m, const double val)
 {
     yError("%s: setMotorEncoder() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::setMotorEncoders(const double* vals)
+bool CiA402MotionControl::setMotorEncoders(const double* vals)
 {
     yError("%s: setMotorEncoders() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::getMotorEncoder(int m, double* v)
+bool CiA402MotionControl::getMotorEncoder(int m, double* v)
 {
     if (v == nullptr)
     {
@@ -816,7 +816,7 @@ bool Ds402MotionControl::getMotorEncoder(int m, double* v)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoders(double* encs)
+bool CiA402MotionControl::getMotorEncoders(double* encs)
 {
     if (encs == nullptr)
     {
@@ -831,7 +831,7 @@ bool Ds402MotionControl::getMotorEncoders(double* encs)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncodersTimed(double* encs, double* time)
+bool CiA402MotionControl::getMotorEncodersTimed(double* encs, double* time)
 {
     if (encs == nullptr || time == nullptr)
     {
@@ -846,7 +846,7 @@ bool Ds402MotionControl::getMotorEncodersTimed(double* encs, double* time)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoderTimed(int m, double* encs, double* time)
+bool CiA402MotionControl::getMotorEncoderTimed(int m, double* encs, double* time)
 {
     if (encs == nullptr || time == nullptr)
     {
@@ -866,7 +866,7 @@ bool Ds402MotionControl::getMotorEncoderTimed(int m, double* encs, double* time)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoderSpeed(int m, double* sp)
+bool CiA402MotionControl::getMotorEncoderSpeed(int m, double* sp)
 {
     if (sp == nullptr)
     {
@@ -885,7 +885,7 @@ bool Ds402MotionControl::getMotorEncoderSpeed(int m, double* sp)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoderSpeeds(double* spds)
+bool CiA402MotionControl::getMotorEncoderSpeeds(double* spds)
 {
     if (spds == nullptr)
     {
@@ -901,7 +901,7 @@ bool Ds402MotionControl::getMotorEncoderSpeeds(double* spds)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoderAcceleration(int m, double* acc)
+bool CiA402MotionControl::getMotorEncoderAcceleration(int m, double* acc)
 {
     if (acc == nullptr)
     {
@@ -920,7 +920,7 @@ bool Ds402MotionControl::getMotorEncoderAcceleration(int m, double* acc)
     return true;
 }
 
-bool Ds402MotionControl::getMotorEncoderAccelerations(double* accs)
+bool CiA402MotionControl::getMotorEncoderAccelerations(double* accs)
 {
     if (accs == nullptr)
     {
@@ -939,7 +939,7 @@ bool Ds402MotionControl::getMotorEncoderAccelerations(double* accs)
 // -----------------------------------------------
 // ----------------- IEncoders  ------------------
 // -----------------------------------------------
-bool Ds402MotionControl::getEncodersTimed(double* encs, double* time)
+bool CiA402MotionControl::getEncodersTimed(double* encs, double* time)
 {
     if (encs == nullptr || time == nullptr)
     {
@@ -956,7 +956,7 @@ bool Ds402MotionControl::getEncodersTimed(double* encs, double* time)
     return true;
 }
 
-bool Ds402MotionControl::getEncoderTimed(int j, double* encs, double* time)
+bool CiA402MotionControl::getEncoderTimed(int j, double* encs, double* time)
 {
     if (encs == nullptr || time == nullptr)
     {
@@ -976,7 +976,7 @@ bool Ds402MotionControl::getEncoderTimed(int j, double* encs, double* time)
     return true;
 }
 
-bool Ds402MotionControl::getAxes(int* ax)
+bool CiA402MotionControl::getAxes(int* ax)
 {
     if (ax == nullptr)
     {
@@ -987,31 +987,31 @@ bool Ds402MotionControl::getAxes(int* ax)
     return true;
 }
 
-bool Ds402MotionControl::resetEncoder(int j)
+bool CiA402MotionControl::resetEncoder(int j)
 {
     yError("%s: resetEncoder() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::resetEncoders()
+bool CiA402MotionControl::resetEncoders()
 {
     yError("%s: resetEncoders() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::setEncoder(int j, const double val)
+bool CiA402MotionControl::setEncoder(int j, const double val)
 {
     yError("%s: setEncoder() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::setEncoders(const double* vals)
+bool CiA402MotionControl::setEncoders(const double* vals)
 {
     yError("%s: setEncoders() not implemented", Impl::kClassName.data());
     return false;
 }
 
-bool Ds402MotionControl::getEncoder(int j, double* v)
+bool CiA402MotionControl::getEncoder(int j, double* v)
 {
     if (v == nullptr)
     {
@@ -1030,7 +1030,7 @@ bool Ds402MotionControl::getEncoder(int j, double* v)
     return true;
 }
 
-bool Ds402MotionControl::getEncoders(double* encs)
+bool CiA402MotionControl::getEncoders(double* encs)
 {
     if (encs == nullptr)
     {
@@ -1046,7 +1046,7 @@ bool Ds402MotionControl::getEncoders(double* encs)
     return true;
 }
 
-bool Ds402MotionControl::getEncoderSpeed(int j, double* sp)
+bool CiA402MotionControl::getEncoderSpeed(int j, double* sp)
 {
     if (sp == nullptr)
     {
@@ -1065,7 +1065,7 @@ bool Ds402MotionControl::getEncoderSpeed(int j, double* sp)
     return true;
 }
 
-bool Ds402MotionControl::getEncoderSpeeds(double* spds)
+bool CiA402MotionControl::getEncoderSpeeds(double* spds)
 {
     if (spds == nullptr)
     {
@@ -1081,7 +1081,7 @@ bool Ds402MotionControl::getEncoderSpeeds(double* spds)
     return true;
 }
 
-bool Ds402MotionControl::getEncoderAcceleration(int j, double* spds)
+bool CiA402MotionControl::getEncoderAcceleration(int j, double* spds)
 {
     if (spds == nullptr)
     {
@@ -1100,7 +1100,7 @@ bool Ds402MotionControl::getEncoderAcceleration(int j, double* spds)
     return true;
 }
 
-bool Ds402MotionControl::getEncoderAccelerations(double* accs)
+bool CiA402MotionControl::getEncoderAccelerations(double* accs)
 {
     if (accs == nullptr)
     {
@@ -1120,7 +1120,7 @@ bool Ds402MotionControl::getEncoderAccelerations(double* accs)
 /// ----------------- IAxisInfo ------------------
 /// -----------------------------------------------
 
-bool Ds402MotionControl::getAxisName(int j, std::string& name)
+bool CiA402MotionControl::getAxisName(int j, std::string& name)
 {
     if (j >= static_cast<int>(m_impl->numAxes))
     {
@@ -1135,7 +1135,7 @@ bool Ds402MotionControl::getAxisName(int j, std::string& name)
     return true;
 }
 
-bool Ds402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
+bool CiA402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
 {
     if (axis >= static_cast<int>(m_impl->numAxes))
     {
@@ -1148,7 +1148,7 @@ bool Ds402MotionControl::getJointType(int axis, yarp::dev::JointTypeEnum& type)
 }
 
 // -------------------------- IControlMode ------------------------------------
-bool Ds402MotionControl::getControlMode(int j, int* mode)
+bool CiA402MotionControl::getControlMode(int j, int* mode)
 {
     if (mode == nullptr)
     {
@@ -1168,7 +1168,7 @@ bool Ds402MotionControl::getControlMode(int j, int* mode)
     return true;
 }
 
-bool Ds402MotionControl::getControlModes(int* modes)
+bool CiA402MotionControl::getControlModes(int* modes)
 {
     if (modes == nullptr)
     {
@@ -1183,7 +1183,7 @@ bool Ds402MotionControl::getControlModes(int* modes)
     return true;
 }
 
-bool Ds402MotionControl::getControlModes(const int n, const int* joints, int* modes)
+bool CiA402MotionControl::getControlModes(const int n, const int* joints, int* modes)
 {
     if (modes == nullptr || joints == nullptr)
     {
@@ -1211,7 +1211,7 @@ bool Ds402MotionControl::getControlModes(const int n, const int* joints, int* mo
     return true;
 }
 
-bool Ds402MotionControl::setControlMode(const int j, const int mode)
+bool CiA402MotionControl::setControlMode(const int j, const int mode)
 {
     if (j >= static_cast<int>(m_impl->numAxes))
     {
@@ -1229,7 +1229,7 @@ bool Ds402MotionControl::setControlMode(const int j, const int mode)
     return true;
 }
 
-bool Ds402MotionControl::setControlModes(const int n, const int* joints, int* modes)
+bool CiA402MotionControl::setControlModes(const int n, const int* joints, int* modes)
 {
     if (modes == nullptr || joints == nullptr)
     {
@@ -1255,7 +1255,7 @@ bool Ds402MotionControl::setControlModes(const int n, const int* joints, int* mo
     return true;
 }
 
-bool Ds402MotionControl::setControlModes(int* modes)
+bool CiA402MotionControl::setControlModes(int* modes)
 {
     if (modes == nullptr)
     {
@@ -1269,7 +1269,7 @@ bool Ds402MotionControl::setControlModes(int* modes)
 }
 
 //// -------------------------- ITorqueControl ------------------------------------
-bool Ds402MotionControl::getTorque(int j, double* t)
+bool CiA402MotionControl::getTorque(int j, double* t)
 {
     if (t == nullptr)
     {
@@ -1288,7 +1288,7 @@ bool Ds402MotionControl::getTorque(int j, double* t)
     return true;
 }
 
-bool Ds402MotionControl::getTorques(double* t)
+bool CiA402MotionControl::getTorques(double* t)
 {
     if (t == nullptr)
     {
@@ -1303,7 +1303,7 @@ bool Ds402MotionControl::getTorques(double* t)
     return true;
 }
 
-bool Ds402MotionControl::getRefTorque(int j, double* t)
+bool CiA402MotionControl::getRefTorque(int j, double* t)
 {
     if (t == nullptr)
     {
@@ -1322,7 +1322,7 @@ bool Ds402MotionControl::getRefTorque(int j, double* t)
     return true;
 }
 
-bool Ds402MotionControl::getRefTorques(double* t)
+bool CiA402MotionControl::getRefTorques(double* t)
 {
     if (t == nullptr)
     {
@@ -1336,7 +1336,7 @@ bool Ds402MotionControl::getRefTorques(double* t)
     return true;
 }
 
-bool Ds402MotionControl::setRefTorque(int j, double t)
+bool CiA402MotionControl::setRefTorque(int j, double t)
 {
     if (j >= static_cast<int>(m_impl->numAxes))
     {
@@ -1350,7 +1350,7 @@ bool Ds402MotionControl::setRefTorque(int j, double t)
     return true;
 }
 
-bool Ds402MotionControl::setRefTorques(const double* t)
+bool CiA402MotionControl::setRefTorques(const double* t)
 {
     if (t == nullptr)
     {
@@ -1364,7 +1364,7 @@ bool Ds402MotionControl::setRefTorques(const double* t)
     return true;
 }
 
-bool Ds402MotionControl::getTorqueRange(int j, double* min, double* max)
+bool CiA402MotionControl::getTorqueRange(int j, double* min, double* max)
 {
     if (min == nullptr || max == nullptr)
     {
@@ -1383,7 +1383,7 @@ bool Ds402MotionControl::getTorqueRange(int j, double* min, double* max)
     return true;
 }
 
-bool Ds402MotionControl::getTorqueRanges(double* min, double* max)
+bool CiA402MotionControl::getTorqueRanges(double* min, double* max)
 {
     if (min == nullptr || max == nullptr)
     {
@@ -1399,7 +1399,7 @@ bool Ds402MotionControl::getTorqueRanges(double* min, double* max)
     return true;
 }
 
-bool Ds402MotionControl::velocityMove(int j, double spd)
+bool CiA402MotionControl::velocityMove(int j, double spd)
 {
     if (j >= static_cast<int>(m_impl->numAxes))
     {
@@ -1414,7 +1414,7 @@ bool Ds402MotionControl::velocityMove(int j, double spd)
     return true;
 }
 
-bool Ds402MotionControl::velocityMove(const double* spds)
+bool CiA402MotionControl::velocityMove(const double* spds)
 {
     if (spds == nullptr)
     {
@@ -1431,7 +1431,7 @@ bool Ds402MotionControl::velocityMove(const double* spds)
     return true;
 }
 
-bool Ds402MotionControl::getRefVelocity(const int joint, double* vel)
+bool CiA402MotionControl::getRefVelocity(const int joint, double* vel)
 {
     if (vel == nullptr)
     {
@@ -1450,7 +1450,7 @@ bool Ds402MotionControl::getRefVelocity(const int joint, double* vel)
     return true;
 }
 
-bool Ds402MotionControl::getRefVelocities(double* spds)
+bool CiA402MotionControl::getRefVelocities(double* spds)
 {
     if (spds == nullptr)
     {
@@ -1466,7 +1466,7 @@ bool Ds402MotionControl::getRefVelocities(double* spds)
     return true;
 }
 
-bool Ds402MotionControl::getRefVelocities(const int n_joint, const int* joints, double* vels)
+bool CiA402MotionControl::getRefVelocities(const int n_joint, const int* joints, double* vels)
 {
     if (vels == nullptr || joints == nullptr)
     {
@@ -1494,19 +1494,19 @@ bool Ds402MotionControl::getRefVelocities(const int n_joint, const int* joints, 
     return true;
 }
 
-bool Ds402MotionControl::setRefAcceleration(int j, double acc)
+bool CiA402MotionControl::setRefAcceleration(int j, double acc)
 {
     // no operation
     return false;
 }
 
-bool Ds402MotionControl::setRefAccelerations(const double* accs)
+bool CiA402MotionControl::setRefAccelerations(const double* accs)
 {
     // no operation
     return false;
 }
 
-bool Ds402MotionControl::getRefAcceleration(int j, double* acc)
+bool CiA402MotionControl::getRefAcceleration(int j, double* acc)
 {
     if (acc == nullptr)
     {
@@ -1522,7 +1522,7 @@ bool Ds402MotionControl::getRefAcceleration(int j, double* acc)
     return true;
 }
 
-bool Ds402MotionControl::getRefAccelerations(double* accs)
+bool CiA402MotionControl::getRefAccelerations(double* accs)
 {
     if (accs == nullptr)
     {
@@ -1533,7 +1533,7 @@ bool Ds402MotionControl::getRefAccelerations(double* accs)
     return true;
 }
 
-bool Ds402MotionControl::stop(int j)
+bool CiA402MotionControl::stop(int j)
 {
     if (j >= static_cast<int>(m_impl->numAxes))
     {
@@ -1548,7 +1548,7 @@ bool Ds402MotionControl::stop(int j)
     return true;
 }
 
-bool Ds402MotionControl::stop()
+bool CiA402MotionControl::stop()
 {
     {
         std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
@@ -1557,7 +1557,7 @@ bool Ds402MotionControl::stop()
     return true;
 }
 
-bool Ds402MotionControl::velocityMove(const int n_joint, const int* joints, const double* spds)
+bool CiA402MotionControl::velocityMove(const int n_joint, const int* joints, const double* spds)
 {
     if (spds == nullptr || joints == nullptr)
     {
@@ -1585,7 +1585,7 @@ bool Ds402MotionControl::velocityMove(const int n_joint, const int* joints, cons
     return true;
 }
 
-bool Ds402MotionControl::setRefAccelerations(const int n_joint,
+bool CiA402MotionControl::setRefAccelerations(const int n_joint,
                                              const int* joints,
                                              const double* accs)
 {
@@ -1604,7 +1604,7 @@ bool Ds402MotionControl::setRefAccelerations(const int n_joint,
     return true;
 }
 
-bool Ds402MotionControl::getRefAccelerations(const int n_joint, const int* joints, double* accs)
+bool CiA402MotionControl::getRefAccelerations(const int n_joint, const int* joints, double* accs)
 {
     if (accs == nullptr || joints == nullptr)
     {
@@ -1621,7 +1621,7 @@ bool Ds402MotionControl::getRefAccelerations(const int n_joint, const int* joint
     return true;
 }
 
-bool Ds402MotionControl::stop(const int n_joint, const int* joints)
+bool CiA402MotionControl::stop(const int n_joint, const int* joints)
 {
     if (joints == nullptr)
     {

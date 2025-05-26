@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef YARP_DEV_CIA402_MOTION_CONTROL_H
-#define YARP_DEV_CIA402_MOTION_CONTROL_H
+#ifndef YARP_DEV_CiA402_MOTION_CONTROL_H
+#define YARP_DEV_CiA402_MOTION_CONTROL_H
 
 #include <memory>
 #include <string>
@@ -26,7 +26,7 @@ namespace dev
  *
  * This class owns the EtherCAT master cycle via yarp::os::PeriodicThread.
  */
-class Ds402MotionControl : public yarp::dev::DeviceDriver,
+class CiA402MotionControl : public yarp::dev::DeviceDriver,
                            public yarp::os::PeriodicThread,
                            public yarp::dev::IMotorEncoders,
                            public yarp::dev::IEncodersTimed,
@@ -42,7 +42,7 @@ public:
      * @param period The period of the thread in seconds.
      * @param useSystemClock Whether to use the system clock for timing.
      */
-    explicit Ds402MotionControl(double period,
+    explicit CiA402MotionControl(double period,
                                 yarp::os::ShouldUseSystemClock useSystemClock
                                 = yarp::os::ShouldUseSystemClock::Yes);
     /**
@@ -50,14 +50,14 @@ public:
      *
      * This constructor sets the period to 0.01 seconds and uses the system clock.
      */
-    Ds402MotionControl();
+    CiA402MotionControl();
 
     /**
      * @brief Destructor.
      *
      * Cleans up the resources used by the driver.
      */
-    ~Ds402MotionControl() override;
+    ~CiA402MotionControl() override;
 
     // clang-format off
     /**
@@ -597,4 +597,4 @@ private:
 } // namespace dev
 } // namespace yarp
 
-#endif // YARP_DEV_CIA402_MOTION_CONTROL_H
+#endif // YARP_DEV_CiA402_MOTION_CONTROL_H
