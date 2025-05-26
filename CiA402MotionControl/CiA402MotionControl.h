@@ -597,4 +597,4 @@ private:
 } // namespace dev
 } // namespace yarp
 
-#endif // YARP_DEV_CiA402_MOTION_CONTROL_H
+#endif // YARP_DEV_CIA402_MOTION_CONTROL_H
