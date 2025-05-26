@@ -45,10 +45,9 @@ Ensure the following dependencies are installed:
 After building the project, the plugin can be loaded into a YARP-based application. Ensure the `YARP_DATA_DIRS` environment variable includes the path to the plugin's configuration files. For example:
 ```bash
 export YARP_DATA_DIRS=/path/to/build/share/yarp:$YARP_DATA_DIRS
+```
 ### Configuration ⚙️
-The plugin requires a configuration file to define the EtherCAT network and device parameters. An example configuration file is located in `config/robot/adj8/config.xml`. Key parameters include:
-- **EtherCAT network interface**: Specify the network interface to use (e.g., `eth0`).
-- **PDO mapping**: Define the custom PDO mapping for the devices.
+The plugin requires a configuration file to define the EtherCAT network and device parameters. An example configuration file is located in `config/robot/adj8/config.xml`.
 
 ### Example 💡
 To run the plugin with a specific configuration:
