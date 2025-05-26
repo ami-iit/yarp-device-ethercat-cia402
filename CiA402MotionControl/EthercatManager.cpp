@@ -9,7 +9,7 @@
 // yarp
 #include <yarp/os/LogStream.h>
 
-using namespace Cia402;
+using namespace CiA402;
 
 constexpr uint32_t mapEntry(uint16_t idx, uint8_t sub, uint8_t bits)
 {

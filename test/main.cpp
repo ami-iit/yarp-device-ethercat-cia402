@@ -34,12 +34,12 @@ void signalHandler(int signum)
 
 // -----------------------------------------------------------------------------
 std::shared_ptr<yarp::dev::PolyDriver>
-constructDS402MotionControl(const yarp::os::Searchable& config)
+constructCiA402MotionControl(const yarp::os::Searchable& config)
 {
     std::shared_ptr<yarp::dev::PolyDriver> driver;
 
     yarp::os::Property options;
-    options.put("device", "Ds402MotionControl");
+    options.put("device", "CiA402MotionControl");
 
     options.put("ifname", config.find("ifname").asString());
     options.put("num_axes", config.find("num_axes").asInt32());
@@ -47,10 +47,10 @@ constructDS402MotionControl(const yarp::os::Searchable& config)
     driver = std::make_shared<yarp::dev::PolyDriver>();
     if (!driver->open(options))
     {
-        yError() << "[constructDS402MotionControl] Failed to open the driver";
+        yError() << "[constructCiA402MotionControl] Failed to open the driver";
         return nullptr;
     }
-    yInfo() << "[constructDS402MotionControl] Driver opened successfully";
+    yInfo() << "[constructCiA402MotionControl] Driver opened successfully";
 
     return driver;
 }
@@ -72,10 +72,10 @@ int main(int argc, char* argv[])
     // prepare and configure the resource finder
     yarp::os::ResourceFinder& rf = yarp::os::ResourceFinder::getResourceFinderSingleton();
 
-    rf.setDefaultConfigFile("ds402_motion_control.ini");
+    rf.setDefaultConfigFile("CiA402_motion_control.ini");
     rf.configure(argc, argv);
 
-    auto driver = constructDS402MotionControl(rf);
+    auto driver = constructCiA402MotionControl(rf);
     if (!driver)
     {
         yError() << "[main] Failed to create the driver";
