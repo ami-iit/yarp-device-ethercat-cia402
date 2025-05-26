@@ -1311,7 +1311,7 @@ bool Ds402MotionControl::getRefTorques(double* t)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+        std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
         std::memcpy(t, m_impl->setPoints.jointTorques.data(), m_impl->numAxes * sizeof(double));
     }
     return true;
