@@ -1497,13 +1497,13 @@ bool Ds402MotionControl::getRefVelocities(const int n_joint, const int* joints, 
 bool Ds402MotionControl::setRefAcceleration(int j, double acc)
 {
     // no operation
-    return true;
+    return false;
 }
 
 bool Ds402MotionControl::setRefAccelerations(const double* accs)
 {
     // no operation
-    return true;
+    return false;
 }
 
 bool Ds402MotionControl::getRefAcceleration(int j, double* acc)
