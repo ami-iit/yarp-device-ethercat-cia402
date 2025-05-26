@@ -1,1 +1,1 @@
-# yarp-device-ethercat-ds402
+# yarp-device-ethercat-CiA402

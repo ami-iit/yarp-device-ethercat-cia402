@@ -3,9 +3,9 @@
 
 cmake_minimum_required(VERSION 3.8...3.30)
 project(
-    yarp-device-ethercat-ds402               # project name
+    yarp-device-ethercat-cia402               # project name
     VERSION 1.0.0                            # bump as you tag releases
-    DESCRIPTION "YARP device plugin for EtherCAT DS402 drives"
+    DESCRIPTION "YARP device plugin for EtherCAT CiA402 drives"
     LANGUAGES CXX
 )
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -69,7 +69,7 @@ find_package(soem REQUIRED)
 include(AddYARPDevice)
 include(AddApplication)
 
-add_subdirectory(Ds402MotionControl)
+add_subdirectory(CiA402MotionControl)
 
 add_subdirectory(test)
 

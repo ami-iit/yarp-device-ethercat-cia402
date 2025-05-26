@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "Cia402StateMachine.h"
+#include "CiA402StateMachine.h"
 
-namespace Cia402
+namespace CiA402
 {
 
 /// Control‑word constants (CiA‑402 table 46)
@@ -13,9 +13,9 @@ static constexpr uint16_t CW_SWITCH_ON = 0x0007;
 static constexpr uint16_t CW_ENABLE_OP = 0x000F;
 static constexpr uint16_t CW_FAULT_RST = 0x0080;
 static constexpr uint16_t CW_QUICKSTOP = 0x0002;
-} // namespace Cia402
+} // namespace CiA402
 
-struct Cia402::StateMachine::Impl
+struct CiA402::StateMachine::Impl
 {
     Impl() = default;
     ~Impl() = default;
@@ -23,26 +23,26 @@ struct Cia402::StateMachine::Impl
     int8_t activeOpEcho{0}; //!< latest OpModeDisplay from the drive
 };
 
-Cia402::StateMachine::StateMachine()
+CiA402::StateMachine::StateMachine()
     : m_impl(std::make_unique<Impl>())
 {
 }
 
-Cia402::StateMachine::~StateMachine() = default;
+CiA402::StateMachine::~StateMachine() = default;
 
-void Cia402::StateMachine::reset()
+void CiA402::StateMachine::reset()
 {
     // Reset the state machine to its initial state.
     m_impl->activeOpEcho = 0;
 }
 
-int8_t Cia402::StateMachine::getActiveOpMode() const noexcept
+int8_t CiA402::StateMachine::getActiveOpMode() const noexcept
 {
     return m_impl->activeOpEcho;
 }
 
-Cia402::StateMachine::Command
-Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
+CiA402::StateMachine::Command
+CiA402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
 {
     // Map Statusword to one of the canonical CiA‑402 states.
     const State state = sw_to_state(statusword);
@@ -109,7 +109,7 @@ Cia402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t o
 }
 
 /** Immediate Fault reset (equivalent to requesting VOCAB_CM_FORCE_IDLE). */
-Cia402::StateMachine::Command Cia402::StateMachine::faultReset() noexcept
+CiA402::StateMachine::Command CiA402::StateMachine::faultReset() noexcept
 {
     return {CW_FAULT_RST, 0, false};
 }
