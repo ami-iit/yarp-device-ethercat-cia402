@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef YARP_DEV_CiA402_ETHERCAT_MANAGER_H
-#define YARP_DEV_CiA402_ETHERCAT_MANAGER_H
+#ifndef YARP_DEV_CIA402_ETHERCAT_MANAGER_H
+#define YARP_DEV_CIA402_ETHERCAT_MANAGER_H
 
 #include <atomic>
 #include <cstdint>
@@ -126,4 +126,4 @@ EthercatManager::readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) n
 
 } // namespace CiA402
 
-#endif // YARP_DEV_CiA402_ETHERCAT_MANAGER_H
+#endif // YARP_DEV_CIA402_ETHERCAT_MANAGER_H

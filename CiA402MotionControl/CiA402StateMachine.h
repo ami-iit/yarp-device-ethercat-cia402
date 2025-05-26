@@ -23,8 +23,8 @@
 //  before sending the next control‑word.
 //
 
-#ifndef YARP_DEV_CiA402_STATE_MACHINE_H
-#define YARP_DEV_CiA402_STATE_MACHINE_H
+#ifndef YARP_DEV_CIA402_STATE_MACHINE_H
+#define YARP_DEV_CIA402_STATE_MACHINE_H
 
 #include <memory>
 #include <string_view>
@@ -169,4 +169,4 @@ private:
 
 } // namespace CiA402
 
-#endif // YARP_DEV_CiA402_STATE_MACHINE_H
+#endif // YARP_DEV_CIA402_STATE_MACHINE_H
