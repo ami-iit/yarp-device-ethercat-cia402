@@ -123,7 +123,7 @@ struct Ds402MotionControl::Impl
     {
         std::mutex mutex; // protects the following vectors
         std::vector<double> jointTorques; // for setTorque()
-        std::vector<double> jointVelocities; // for setPosition()
+        std::vector<double> jointVelocities; // for velocityMove() or joint velocity commands
 
         void resize(std::size_t n)
         {
