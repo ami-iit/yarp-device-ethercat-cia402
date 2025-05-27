@@ -17,8 +17,8 @@ Ensure the following dependencies are installed:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-repo/yarp-device-ethercat-ds402.git
-   cd yarp-device-ethercat-ds402
+   git clone https://github.com/your-repo/yarp-device-ethercat-cia402.git
+   cd yarp-device-ethercat-cia402
    ```
 2. Create a build directory and navigate into it:
    ```bash
