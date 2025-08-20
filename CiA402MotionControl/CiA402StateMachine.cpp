@@ -41,8 +41,10 @@ int8_t CiA402::StateMachine::getActiveOpMode() const noexcept
     return m_impl->activeOpEcho;
 }
 
-CiA402::StateMachine::Command
-CiA402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq)
+CiA402::StateMachine::Command CiA402::StateMachine::update(uint16_t statusword,
+                                                           int8_t opModeDisplay,
+                                                           int8_t opReq,
+                                                           bool hwInhibit)
 {
     // Map Statusword to one of the canonical CiA‑402 states.
     const State state = sw_to_state(statusword);
@@ -53,6 +55,12 @@ CiA402::StateMachine::update(uint16_t statusword, int8_t opModeDisplay, int8_t o
     } else
     {
         m_impl->activeOpEcho = 0; // reset the echo
+    }
+
+    // Hardware inhibit: if true, disable voltage and do not change OpMode.
+    if (hwInhibit)
+    {
+        return {CW_DISABLE_VOLTAGE, 0, true}; // write Op=0
     }
 
     // Check for Fault: always try a fault‑reset first.

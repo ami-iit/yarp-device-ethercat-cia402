@@ -400,6 +400,15 @@ public:
     bool setRefTorques(const double* t) override;
 
     /**
+     * @brief Sets the reference torques for a subset of joints.
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param t Array of reference torques to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setRefTorques(const int n_joint, const int* joints, const double* t) override;
+
+    /**
      * @brief Sets the reference torque for a specific joint.
      * @param j Index of the joint.
      * @param t Reference torque to set.

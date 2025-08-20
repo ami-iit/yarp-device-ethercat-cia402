@@ -146,10 +146,11 @@ public:
      * @param statusword     Value read from TxPDO.Statusword.
      * @param opModeDisplay  Value read from TxPDO.OpModeDisplay (object 0x6061).
      * @param opReq         Requested operation mode (object 0x6060).
+     * @param hwInhibit     Hardware inhibit state (true if inhibited, false otherwise).
      * @return Command structure containing the control word, operation mode, and a flag indicating
      * if the opMode should be written.
      */
-    Command update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq);
+    Command update(uint16_t statusword, int8_t opModeDisplay, int8_t opReq, bool hwInhibit);
 
     int8_t getActiveOpMode() const noexcept;
 
@@ -161,6 +162,14 @@ public:
      * @return Command structure containing the control word and operation mode for fault reset.
      */
     Command faultReset() noexcept;
+
+    /**
+     * Check if the operation is enabled.
+     * @param sw Status word.
+     * @return true if the operation is enabled, false otherwise.
+     */
+    static inline bool isOpEnabled(uint16_t sw) { return (sw & 0x0004) != 0; }
+
 
 private:
     struct Impl;
