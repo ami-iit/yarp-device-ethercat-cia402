@@ -11,6 +11,7 @@
 #include <yarp/dev/IAxisInfo.h>
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
+#include <yarp/dev/IJointFault.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/ITorqueControl.h>
 #include <yarp/dev/IVelocityControl.h>
@@ -33,7 +34,8 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::IAxisInfo,
                             public yarp::dev::IControlMode,
                             public yarp::dev::ITorqueControl,
-                            public yarp::dev::IVelocityControl
+                            public yarp::dev::IVelocityControl,
+                            public yarp::dev::IJointFault
 {
 public:
     /**
@@ -597,6 +599,16 @@ public:
      * joints.
      */
     bool stop(const int n_joint, const int* joints) override;
+
+    // ---------------- IJointFault ----------------
+    /**
+     * @brief Gets the last joint fault for a specific joint.
+     * @param j Index of the joint.
+     * @param fault Reference to an integer to store the fault code.
+     * @param message Reference to a string to store the fault message.
+     * @return true if successful, false otherwise.
+     */
+    bool getLastJointFault(int j, int& fault, std::string& message) override;
 
 private:
     struct Impl;

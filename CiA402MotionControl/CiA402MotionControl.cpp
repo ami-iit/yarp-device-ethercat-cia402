@@ -38,6 +38,77 @@
 #include <vector>
 #include <cmath>
 
+namespace
+{
+inline std::string describe603F(uint16_t code)
+{
+    switch (code)
+    {
+    case 0x0000:
+        return "No fault";
+    // Hardware protection – current/voltage/temperature
+    case 0x2220:
+        return "Hardware over-current (phase or DC bus)"; // PhOc*/PhOc
+    case 0x3210:
+        return "Hardware over-voltage";
+    case 0x3220:
+        return "Hardware under-voltage";
+    case 0x4310:
+        return "Over-temperature (warning/error threshold reached)"; // PhOtW/PhOtDriv
+
+    // Gate driver & safety/homing (Synapticon groups many items here)
+    case 0x5300:
+        return "Gate-driver / safety / HW protection fault "
+               "(e.g., UVLO, VDS OC, gate drive fault, safety input discrepancy,"
+               " homing switch invalid state)";
+
+    // Config/parameters out of range
+    case 0x6320:
+        return "Invalid configuration / parameter out of range";
+
+    // Sensors (external analog / encoder comms)
+    case 0x7300:
+        return "External analog sensor threshold exceeded";
+    case 0x7303:
+        return "Encoder/Sensor communication fault (BiSS/SSI: link/level/frame)";
+    case 0x7304:
+        return "Encoder/Sensor configuration/CRC/frame error";
+
+    // Firmware / internal service issues
+    case 0x7500:
+        return "Internal service skipping cycles / internal fault";
+
+    // Performance / timing warnings reported in error list
+    case 0xF002:
+        return "Control cycle exceeded (service running slower than 4 kHz)";
+
+    default:
+        // Family-based fallbacks for unlisted but related codes
+        switch (code & 0xFF00)
+        {
+        case 0x2200:
+            return "Current-related hardware fault";
+        case 0x3200:
+            return "Voltage-related hardware fault";
+        case 0x4300:
+            return "Temperature-related fault/warning";
+        case 0x5300:
+            return "Gate-driver / safety / protection fault (manufacturer specific)";
+        case 0x6300:
+            return "Invalid configuration / parameter";
+        case 0x7300:
+            return "Sensor/encoder fault (communication/config)";
+        case 0x7500:
+            return "Internal/firmware fault";
+        case 0xF000:
+            return "Timing/performance warning";
+        default:
+            return "Unknown (0x603F) error code";
+        }
+    }
+}
+} // namespace
+
 namespace yarp::dev
 {
 
@@ -1397,7 +1468,9 @@ bool CiA402MotionControl::setRefTorque(int j, double t)
         std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
         if (m_impl->controlModeState.active[j] != VOCAB_CM_TORQUE)
         {
-            yError("%s: setRefTorque rejected: TORQUE mode is not active for the joint %d", Impl::kClassName.data(), j);
+            yError("%s: setRefTorque rejected: TORQUE mode is not active for the joint %d",
+                   Impl::kClassName.data(),
+                   j);
             return false;
         }
     }
@@ -1422,7 +1495,9 @@ bool CiA402MotionControl::setRefTorques(const double* t)
         {
             if (m_impl->controlModeState.active[j] != VOCAB_CM_TORQUE)
             {
-                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint %zu", Impl::kClassName.data(), j);
+                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint %zu",
+                       Impl::kClassName.data(),
+                       j);
                 return false; // reject
             }
         }
@@ -1459,7 +1534,9 @@ bool CiA402MotionControl::setRefTorques(const int n_joint, const int* joints, co
             }
             if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_TORQUE)
             {
-                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint %d", Impl::kClassName.data(), joints[k]);
+                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint %d",
+                       Impl::kClassName.data(),
+                       joints[k]);
                 return false; // reject
             }
         }
@@ -1522,8 +1599,10 @@ bool CiA402MotionControl::velocityMove(int j, double spd)
         std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
         if (m_impl->controlModeState.active[j] != VOCAB_CM_VELOCITY)
         {
-            yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %d", Impl::kClassName.data(), j);
-           
+            yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %d",
+                   Impl::kClassName.data(),
+                   j);
+
             // this will return true to indicate the rejection was handled
             return true;
         }
@@ -1550,15 +1629,16 @@ bool CiA402MotionControl::velocityMove(const double* spds)
         {
             if (m_impl->controlModeState.active[j] != VOCAB_CM_VELOCITY)
             {
-                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %zu", Impl::kClassName.data(), j);
+                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %zu",
+                       Impl::kClassName.data(),
+                       j);
                 return false; // reject
             }
         }
     }
 
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
-    std::memcpy(m_impl->setPoints.jointVelocities.data(), spds,
-                m_impl->numAxes * sizeof(double));
+    std::memcpy(m_impl->setPoints.jointVelocities.data(), spds, m_impl->numAxes * sizeof(double));
     std::fill(m_impl->setPoints.hasVelSP.begin(), m_impl->setPoints.hasVelSP.end(), true);
     return true;
 }
@@ -1661,7 +1741,9 @@ bool CiA402MotionControl::getRefAccelerations(double* accs)
         yError("%s: null pointer", Impl::kClassName.data());
         return false;
     }
-    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // CiA-402 does not support acceleration setpoints, so we return 0.0 for all axes
+    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // CiA-402 does not support acceleration
+                                                            // setpoints, so we return 0.0 for all
+                                                            // axes
     return true;
 }
 
@@ -1718,7 +1800,9 @@ bool CiA402MotionControl::velocityMove(const int n_joint, const int* joints, con
             }
             if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_VELOCITY)
             {
-                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %d", Impl::kClassName.data(), joints[k]);
+                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %d",
+                       Impl::kClassName.data(),
+                       joints[k]);
                 return false; // reject
             }
         }
@@ -1735,8 +1819,8 @@ bool CiA402MotionControl::velocityMove(const int n_joint, const int* joints, con
 }
 
 bool CiA402MotionControl::setRefAccelerations(const int n_joint,
-                                             const int* joints,
-                                             const double* accs)
+                                              const int* joints,
+                                              const double* accs)
 {
     if (accs == nullptr || joints == nullptr)
     {
@@ -1760,7 +1844,8 @@ bool CiA402MotionControl::getRefAccelerations(const int n_joint, const int* join
         yError("%s: null pointer", Impl::kClassName.data());
         return false;
     }
-    std::memset(accs, 0, n_joint * sizeof(double)); // CiA-402 does not support acceleration setpoints, so we return 0.0 for all axes
+    std::memset(accs, 0, n_joint * sizeof(double)); // CiA-402 does not support acceleration
+                                                    // setpoints, so we return 0.0 for all axes
     return true;
 }
 
@@ -1790,6 +1875,31 @@ bool CiA402MotionControl::stop(const int n_joint, const int* joints)
             m_impl->setPoints.hasVelSP[joints[k]] = true;
         }
     }
+    return true;
+}
+
+bool CiA402MotionControl::getLastJointFault(int j, int& fault, std::string& message)
+{
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getLastJointFault: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    const int slave = m_impl->firstSlave + j;
+
+    uint16_t code = 0;
+    auto err = m_impl->ethercatManager.readSDO<uint16_t>(slave, 0x603F, 0x00, code);
+    if (err != ::CiA402::EthercatManager::Error::NoError)
+    {
+        yError("%s: getLastJointFault: SDO read 0x603F:00 failed (joint %d)",
+               Impl::kClassName.data(),
+               j);
+        return false;
+    }
+
+    fault = static_cast<int>(code);
+    message = describe603F(code);
     return true;
 }
 
