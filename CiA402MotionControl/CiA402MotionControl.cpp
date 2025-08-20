@@ -29,6 +29,7 @@
 #include <ethercat.h>
 
 // STD
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
