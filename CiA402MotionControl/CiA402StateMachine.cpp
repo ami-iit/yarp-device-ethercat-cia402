@@ -66,7 +66,7 @@ CiA402::StateMachine::Command CiA402::StateMachine::update(uint16_t statusword,
     // Check for Fault: always try a fault‑reset first.
     if (state == State::Fault)
     {
-        return {CW_FAULT_RST, 0, false};
+        return {CW_DISABLE_VOLTAGE, 0, false};
     }
 
     // Idle
