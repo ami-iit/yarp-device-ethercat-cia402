@@ -27,13 +27,13 @@ namespace dev
  * This class owns the EtherCAT master cycle via yarp::os::PeriodicThread.
  */
 class CiA402MotionControl : public yarp::dev::DeviceDriver,
-                           public yarp::os::PeriodicThread,
-                           public yarp::dev::IMotorEncoders,
-                           public yarp::dev::IEncodersTimed,
-                           public yarp::dev::IAxisInfo,
-                           public yarp::dev::IControlMode,
-                           public yarp::dev::ITorqueControl,
-                           public yarp::dev::IVelocityControl
+                            public yarp::os::PeriodicThread,
+                            public yarp::dev::IMotorEncoders,
+                            public yarp::dev::IEncodersTimed,
+                            public yarp::dev::IAxisInfo,
+                            public yarp::dev::IControlMode,
+                            public yarp::dev::ITorqueControl,
+                            public yarp::dev::IVelocityControl
 {
 public:
     /**
@@ -43,8 +43,8 @@ public:
      * @param useSystemClock Whether to use the system clock for timing.
      */
     explicit CiA402MotionControl(double period,
-                                yarp::os::ShouldUseSystemClock useSystemClock
-                                = yarp::os::ShouldUseSystemClock::Yes);
+                                 yarp::os::ShouldUseSystemClock useSystemClock
+                                 = yarp::os::ShouldUseSystemClock::Yes);
     /**
      * @brief Default constructor.
      *
@@ -499,7 +499,7 @@ public:
      * @return true if successful, false otherwise.
      */
     bool getRefVelocities(const int n_joint, const int* joints, double* vels) override;
-   
+
     /**
      * @brief (Unused in CSV mode) Sets the reference acceleration for a specific joint.
      *
