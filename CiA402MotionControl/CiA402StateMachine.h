@@ -168,8 +168,60 @@ public:
      * @param sw Status word.
      * @return true if the operation is enabled, false otherwise.
      */
-    static inline bool isOpEnabled(uint16_t sw) { return (sw & 0x0004) != 0; }
+    static inline bool isOpEnabled(uint16_t sw)
+    {
+        return (sw & 0x0004) != 0;
+    }
 
+    /**
+     * Check if the drive is in a fault state.
+     * @param sw Status word.
+     * @return true if the drive is in a fault state, false otherwise.
+     */
+    static inline bool isFault(uint16_t sw)
+    {
+        return sw_to_state(sw) == State::Fault;
+    }
+
+    /**
+     * Check if the fault reaction is active.
+     * @param sw Status word.
+     * @return true if the fault reaction is active, false otherwise.
+     */
+    static inline bool isFaultReactionActive(uint16_t sw)
+    {
+        return sw_to_state(sw) == State::FaultReaction;
+    }
+
+    /**
+     * Check if the drive is not ready to switch on.
+     * @param sw Status word.
+     * @return true if the drive is not ready to switch on, false otherwise.
+     */
+    static inline bool isQuickStopActive(uint16_t sw)
+    {
+        return sw_to_state(sw) == State::QuickStopActive;
+    }
+
+    /**
+     * Check if the drive is switched on.
+     * @param sw Status word.
+     * @return true if the drive is switched on, false otherwise.
+     */
+    static inline bool isOperationEnabled(uint16_t sw)
+    {
+        return sw_to_state(sw) == State::OperationEnabled;
+    }
+
+    /**
+     * Check if the drive is switched on.
+     * @param sw Status word.
+     * @return true if the drive is switched on, false otherwise.
+     */
+    static inline bool isSwitchedOn(uint16_t sw)
+    {
+        return sw_to_state(sw) == State::SwitchedOn;
+    }
 
 private:
     struct Impl;

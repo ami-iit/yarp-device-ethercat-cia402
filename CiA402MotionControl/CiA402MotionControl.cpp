@@ -36,7 +36,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cmath>
 
 namespace
 {
@@ -46,67 +45,102 @@ inline std::string describe603F(uint16_t code)
     {
     case 0x0000:
         return "No fault";
-    // Hardware protection – current/voltage/temperature
+
+    // === Your explicit mappings ===
     case 0x2220:
-        return "Hardware over-current (phase or DC bus)"; // PhOc*/PhOc
+        return "Continuous over current (device internal)";
+    case 0x2250:
+        return "Short circuit (device internal)";
+    case 0x2350:
+        return "Load level fault (I2t, thermal state)";
+    case 0x2351:
+        return "Load level warning (I2t, thermal state)";
+    case 0x3130:
+        return "Phase failure";
+    case 0x3131:
+        return "Phase failure L1";
+    case 0x3132:
+        return "Phase failure L2";
+    case 0x3133:
+        return "Phase failure L3";
     case 0x3210:
-        return "Hardware over-voltage";
+        return "DC link over-voltage";
     case 0x3220:
-        return "Hardware under-voltage";
+        return "DC link under-voltage";
+    case 0x3331:
+        return "Field circuit interrupted";
+    case 0x4210:
+        return "Excess temperature device";
     case 0x4310:
-        return "Over-temperature (warning/error threshold reached)"; // PhOtW/PhOtDriv
-
-    // Gate driver & safety/homing (Synapticon groups many items here)
+        return "Excess temperature drive";
+    case 0x5200:
+        return "Control";
     case 0x5300:
-        return "Gate-driver / safety / HW protection fault "
-               "(e.g., UVLO, VDS OC, gate drive fault, safety input discrepancy,"
-               " homing switch invalid state)";
-
-    // Config/parameters out of range
+        return "Operating unit";
+    case 0x6010:
+        return "Software reset (watchdog)";
     case 0x6320:
-        return "Invalid configuration / parameter out of range";
-
-    // Sensors (external analog / encoder comms)
+        return "Parameter error";
+    case 0x7121:
+        return "Motor blocked";
     case 0x7300:
-        return "External analog sensor threshold exceeded";
+        return "Sensor";
     case 0x7303:
-        return "Encoder/Sensor communication fault (BiSS/SSI: link/level/frame)";
+        return "Resolver 1 fault";
     case 0x7304:
-        return "Encoder/Sensor configuration/CRC/frame error";
-
-    // Firmware / internal service issues
+        return "Resolver 2 fault";
     case 0x7500:
-        return "Internal service skipping cycles / internal fault";
-
-    // Performance / timing warnings reported in error list
+        return "Communication";
+    case 0x8612:
+        return "Positioning controller (reference limit)";
     case 0xF002:
-        return "Control cycle exceeded (service running slower than 4 kHz)";
+        return "Sub-synchronous run";
 
     default:
-        // Family-based fallbacks for unlisted but related codes
+        // === Family fallbacks (upper byte) ===
         switch (code & 0xFF00)
         {
         case 0x2200:
-            return "Current-related hardware fault";
+            return "Current/device-internal fault";
+        case 0x2300:
+            return "Motor/output circuit fault";
+        case 0x3100:
+            return "Phase/mains supply issue";
         case 0x3200:
-            return "Voltage-related hardware fault";
+            return "DC link voltage issue";
+        case 0x3300:
+            return "Field/armature circuit issue";
+        case 0x4200:
+            return "Excess temperature (device)";
         case 0x4300:
-            return "Temperature-related fault/warning";
+            return "Excess temperature (drive)";
+        case 0x5200:
+            return "Control device hardware / limits";
         case 0x5300:
-            return "Gate-driver / safety / protection fault (manufacturer specific)";
+            return "Operating unit / safety";
+        case 0x6000:
+            return "Software reset / watchdog";
         case 0x6300:
-            return "Invalid configuration / parameter";
+            return "Parameter/configuration error";
+        case 0x7100:
+            return "Motor blocked / mechanical issue";
         case 0x7300:
-            return "Sensor/encoder fault (communication/config)";
+            return "Sensor/encoder fault";
         case 0x7500:
-            return "Internal/firmware fault";
+            return "Communication/internal";
+        case 0x8600:
+            return "Positioning controller (vendor specific)";
         case 0xF000:
             return "Timing/performance warning";
-        default:
-            return "Unknown (0x603F) error code";
+        default: {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Unknown 0x603F error: 0x%04X", code);
+            return std::string(buf);
+        }
         }
     }
 }
+
 } // namespace
 
 namespace yarp::dev
@@ -442,17 +476,11 @@ struct CiA402MotionControl::Impl
             {
                 if (!this->trqLatched[j])
                 {
-                    // Capture seed once on entry
-                    const double Nm = this->variables.jointTorques[j];
-                    this->torqueSeedNm[j] = Nm;
-                    const int16_t tq
-                        = static_cast<int16_t>(std::llround(Nm / this->ratedTorque[j] * 1000.0));
-                    rxPDO->TargetTorque = tq; // (c) first cycle → measured torque
+                    rxPDO->TargetTorque = 0;
                     this->trqLatched[j] = true;
                 } else
                 {
-                    const double Nm = setPoints.hasTorqueSP[j] ? setPoints.jointTorques[j]
-                                                               : torqueSeedNm[j];
+                    const double Nm = setPoints.hasTorqueSP[j] ? setPoints.jointTorques[j] : 0;
                     const int16_t tq
                         = static_cast<int16_t>(std::llround(Nm / this->ratedTorque[j] * 1000.0));
                     rxPDO->TargetTorque = tq; // keep seed until user sets
@@ -467,15 +495,11 @@ struct CiA402MotionControl::Impl
                     velLatched[j] = true;
                 } else
                 {
-                    if (setPoints.hasVelSP[j])
-                    {
-                        const double rpm
-                            = setPoints.jointVelocities[j] * gearRatio[j] * DEG_PER_SEC_TO_RPM;
-                        rxPDO->TargetVelocity = static_cast<int32_t>(std::llround(rpm));
-                    } else
-                    {
-                        rxPDO->TargetVelocity = 0; // hold safe default until user provides a SP
-                    }
+                    const double rpm
+                        = setPoints.hasVelSP[j]
+                              ? setPoints.jointVelocities[j] * gearRatio[j] * DEG_PER_SEC_TO_RPM
+                              : 0;
+                    rxPDO->TargetVelocity = static_cast<int32_t>(std::llround(rpm));
                 }
             }
         }
@@ -585,6 +609,8 @@ struct CiA402MotionControl::Impl
         {
         case VOCAB_CM_IDLE:
             return "VOCAB_CM_IDLE";
+        case VOCAB_CM_FORCE_IDLE:
+            return "VOCAB_CM_FORCE_IDLE";
         case VOCAB_CM_POSITION:
             return "VOCAB_CM_POSITION";
         case VOCAB_CM_VELOCITY:
@@ -713,7 +739,6 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->velLatched.assign(m_impl->numAxes, false);
     m_impl->trqLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
-    m_impl->lastActiveMode.assign(m_impl->numAxes, VOCAB_CM_IDLE);
 
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
@@ -764,6 +789,19 @@ void CiA402MotionControl::run()
 
             const int tgt = m_impl->controlModeState.target[j];
 
+            // If in FAULT  the only way to escape from the fault is to do FORCE IDLE
+            if (m_impl->controlModeState.active[j] == VOCAB_CM_HW_FAULT
+                && tgt == VOCAB_CM_FORCE_IDLE)
+            {
+                const auto cmd = m_impl->sm[j]->faultReset(); // CW=0x0080
+                rx->Controlword = cmd.controlword;
+                rx->OpMode = 0; // neutral
+                // Clear user setpoints/latches immediately
+                m_impl->setPoints.reset((int)j);
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                continue; // skip normal update-path this cycle
+            }
+
             /* ------------ normal control-mode path --------------------- */
             const int8_t opReq = Impl::yarpToCiaOp(tgt); // −1 = unsupported
             if (opReq < 0)
@@ -813,15 +851,23 @@ void CiA402MotionControl::run()
             const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
             ::CiA402::TxPDO* tx = m_impl->ethercatManager.getTxPDO(slaveIdx);
             const bool hwInhibit = (tx->STO == 1) || (tx->SBC == 1);
-            const bool enabled = CiA402::StateMachine::isOpEnabled(tx->Statusword);
+            const bool enabled = CiA402::StateMachine::isOperationEnabled(tx->Statusword);
+            const bool inFault = CiA402::StateMachine::isFault(tx->Statusword)
+                                 || CiA402::StateMachine::isFaultReactionActive(tx->Statusword);
 
             int newActive = VOCAB_CM_IDLE;
-            if (!hwInhibit && enabled)
+            if (inFault)
+            {
+                newActive = VOCAB_CM_HW_FAULT;
+            } else if (!hwInhibit && enabled)
             {
                 newActive = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
             }
-            // If IDLE or inhibited → clear SPs and latches; force target to IDLE on HW inhibit
-            if (newActive == VOCAB_CM_IDLE)
+
+            // If IDLE or FAULT or inhibited → clear SPs and latches; force target to IDLE on HW
+            // inhibit
+            if (newActive == VOCAB_CM_IDLE || newActive == VOCAB_CM_HW_FAULT
+                || newActive == VOCAB_CM_FORCE_IDLE)
             {
                 m_impl->setPoints.reset(j);
                 m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
@@ -832,17 +878,16 @@ void CiA402MotionControl::run()
             }
 
             // Detect mode entry to (re)arm first-cycle latches
-            if (m_impl->lastActiveMode[j] != newActive)
+            if (m_impl->controlModeState.active[j] != newActive
+                && (newActive != VOCAB_CM_IDLE || newActive != VOCAB_CM_FORCE_IDLE))
             {
-                if (newActive != VOCAB_CM_IDLE)
-                {
-                    // entering a control mode: arm latches and clear "has SP" flags
-                    m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
-                    std::lock_guard<std::mutex> sp(m_impl->setPoints.mutex);
-                    m_impl->setPoints.hasVelSP[j] = false;
-                    m_impl->setPoints.hasTorqueSP[j] = false;
-                }
-                m_impl->lastActiveMode[j] = newActive;
+                // entering a control mode: arm latches and clear "has SP" flags
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->setPoints.reset(j);
+
+                /*                 std::lock_guard<std::mutex> sp(m_impl->setPoints.mutex);
+                                m_impl->setPoints.hasVelSP[j] = false;
+                                m_impl->setPoints.hasTorqueSP[j] = false; */
             }
 
             m_impl->controlModeState.active[j] = newActive;
@@ -1888,6 +1933,7 @@ bool CiA402MotionControl::getLastJointFault(int j, int& fault, std::string& mess
 
     const int slave = m_impl->firstSlave + j;
 
+    // --- 0x603F:00 Error code (UINT16) ---
     uint16_t code = 0;
     auto err = m_impl->ethercatManager.readSDO<uint16_t>(slave, 0x603F, 0x00, code);
     if (err != ::CiA402::EthercatManager::Error::NoError)
@@ -1900,7 +1946,52 @@ bool CiA402MotionControl::getLastJointFault(int j, int& fault, std::string& mess
 
     fault = static_cast<int>(code);
     message = describe603F(code);
+
+    // --- 0x203F:01 Error report (STRING(8)) ---
+    // Use a fixed char[8] so we can call the templated readSDO<T> unmodified.
+    char report[8] = {0}; // zero-init so partial reads are safely NUL-terminated
+    auto err2 = m_impl->ethercatManager.readSDO(slave, 0x203F, 0x01, report);
+    if (err2 == ::CiA402::EthercatManager::Error::NoError)
+    {
+        // Trim at first NUL (STRING(8) is not guaranteed to be fully used)
+        std::size_t len = 0;
+        while (len < sizeof(report) && report[len] != '\0')
+            ++len;
+
+        if (len > 0)
+        {
+            // If it's clean printable ASCII, append as text; otherwise show hex bytes.
+            bool printable = true;
+            for (std::size_t i = 0; i < len; ++i)
+            {
+                const unsigned char c = static_cast<unsigned char>(report[i]);
+                if (c < 0x20 || c > 0x7E)
+                {
+                    printable = false;
+                    break;
+                }
+            }
+
+            if (printable)
+            {
+                message += " — report: ";
+                message.append(report, len);
+            } else
+            {
+                char hex[3 * 8 + 1] = {0};
+                int pos = 0;
+                for (std::size_t i = 0; i < len && pos <= static_cast<int>(sizeof(hex)) - 3; ++i)
+                    pos += std::snprintf(hex + pos,
+                                         sizeof(hex) - pos,
+                                         "%02X%s",
+                                         static_cast<unsigned char>(report[i]),
+                                         (i + 1 < len) ? " " : "");
+                message += " — report: [";
+                message += hex;
+                message += "]";
+            }
+        }
+    }
     return true;
 }
-
 } // namespace yarp::dev
