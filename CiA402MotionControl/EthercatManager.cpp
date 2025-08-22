@@ -31,61 +31,92 @@ EthercatManager::~EthercatManager()
     }
 }
 
+static inline int wr8(int s, uint16_t idx, uint8_t sub, uint8_t v)
+{
+    return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+}
+static inline int wr16(int s, uint16_t idx, uint8_t sub, uint16_t v)
+{
+    return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+}
+static inline int wr32(int s, uint16_t idx, uint8_t sub, uint32_t v)
+{
+    return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+}
+
 EthercatManager::Error EthercatManager::configurePDOMapping(int s)
 {
-    auto wr8 = [s](uint16_t idx, uint8_t sub, uint8_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    // probe for optional fields
+    auto probe32 = [&](uint16_t idx, uint8_t sub) -> bool {
+        int32_t tmp = 0;
+        int size = sizeof(tmp);
+        int rc = ec_SDOread(s, idx, sub, FALSE, &size, &tmp, EC_TIMEOUTRXM);
+        return rc > 0;
     };
-    auto wr32 = [s](uint16_t idx, uint8_t sub, uint32_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
-    };
-    auto wr16 = [s](uint16_t idx, uint8_t sub, uint16_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
-    };
+    const bool hasEnc1Pos = probe32(0x2111, 0x02);
+    const bool hasEnc1Vel = probe32(0x2111, 0x03);
+    const bool hasEnc2Pos = probe32(0x2113, 0x02);
+    const bool hasEnc2Vel = probe32(0x2113, 0x03);
+    const bool hasTime = probe32(0x20F0, 0x00);
+    const bool hasSafe = probe32(0x6621, 0x01) && probe32(0x6621, 0x02);
 
-    /* ---------- disable existing assignments ---------- */
-    wr8(0x1C12, 0x00, 0);
-    wr8(0x1C13, 0x00, 0);
-    wr8(0x1600, 0x00, 0);
-    wr8(0x1A00, 0x00, 0);
+    // clear existing assignments
+    wr8(s, 0x1C12, 0x00, 0);
+    wr8(s, 0x1C13, 0x00, 0);
+    wr8(s, 0x1600, 0x00, 0);
+    wr8(s, 0x1A00, 0x00, 0);
 
-    /* ---------- build RxPDO 0x1600 ---------- */
+    // RxPDO 0x1600 (fixed)
     uint8_t n = 0;
-    wr32(0x1600, ++n, mapEntry(0x6040, 0x00, 16));
-    wr32(0x1600, ++n, mapEntry(0x6060, 0x00, 8));
-    wr32(0x1600, ++n, mapEntry(0x6071, 0x00, 16));
-    wr32(0x1600, ++n, mapEntry(0x607A, 0x00, 32));
-    wr32(0x1600, ++n, mapEntry(0x60FF, 0x00, 32));
-    wr8(0x1600, 0x00, n); // sub-0 = number of mapped objects
+    wr32(s, 0x1600, ++n, mapEntry(0x6040, 0x00, 16));
+    wr32(s, 0x1600, ++n, mapEntry(0x6060, 0x00, 8));
+    wr32(s, 0x1600, ++n, mapEntry(0x6071, 0x00, 16));
+    wr32(s, 0x1600, ++n, mapEntry(0x607A, 0x00, 32));
+    wr32(s, 0x1600, ++n, mapEntry(0x60FF, 0x00, 32));
+    wr8(s, 0x1600, 0x00, n);
 
-    /* ---------- build TxPDO 0x1A00 ---------- */
-    n = 0;
-    wr32(0x1A00, ++n, mapEntry(0x6041, 0x00, 16));
-    wr32(0x1A00, ++n, mapEntry(0x6061, 0x00, 8));
-    wr32(0x1A00, ++n, mapEntry(0x6064, 0x00, 32));
-    wr32(0x1A00, ++n, mapEntry(0x606C, 0x00, 32));
-    wr32(0x1A00, ++n, mapEntry(0x6077, 0x00, 16));
-    wr32(0x1A00, ++n, mapEntry(0x6065, 0x00, 32));
+    // TxPDO 0x1A00 (dynamic)
+    uint8_t m = 0;
+    uint32_t byteOff = 0;
+    auto add = [&](TxField id, uint16_t idx, uint8_t sub, uint8_t bits) {
+        wr32(s, 0x1A00, ++m, mapEntry(idx, sub, bits));
+        m_txMap[s - 1][id] = FieldInfo{id, byteOff, bits};
+        byteOff += bits / 8;
+    };
 
-    // The following entries are specific to the Synapticon drives
-    // timestamp --> synapticon
-    // https://doc.synapticon.com/circulo/sw5.1/objects_html/2xxx/20f0.html?Highlight=0x20F0
-    wr32(0x1A00, ++n, mapEntry(0x20F0, 0x00, 32));
-    // STO --> synapticon
-    // https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
-    wr32(0x1A00, ++n, mapEntry(0x6621, 0x01, 8));
-    // SBC  --> synapticon
-    // https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/6621.html?Highlight=0x6621
-    wr32(0x1A00, ++n, mapEntry(0x6621, 0x02, 8));
-    wr8(0x1A00, 0x00, n);
+    m_txMap[s - 1].clear();
+    add(TxField::Statusword, 0x6041, 0x00, 16);
+    add(TxField::OpModeDisplay, 0x6061, 0x00, 8);
+    add(TxField::Position6064, 0x6064, 0x00, 32);
+    add(TxField::Velocity606C, 0x606C, 0x00, 32);
+    add(TxField::Torque6077, 0x6077, 0x00, 16);
+    add(TxField::PositionError6065, 0x6065, 0x00, 32);
 
-    /* ---------- (re)assign to sync-managers ---------- */
-    uint16_t pdo = 0x1600;
-    wr16(0x1C12, 1, pdo);
-    pdo = 0x1A00;
-    wr16(0x1C13, 1, pdo);
-    wr8(0x1C12, 0x00, 1); // sub-0 = #PDOs
-    wr8(0x1C13, 0x00, 1);
+    if (hasTime)
+    {
+        add(TxField::Timestamp20F0, 0x20F0, 0x00, 32);
+    }
+    if (hasSafe)
+    {
+        add(TxField::STO_6621_01, 0x6621, 0x01, 8);
+        add(TxField::SBC_6621_02, 0x6621, 0x02, 8);
+    }
+    if (hasEnc1Pos)
+        add(TxField::Enc1Pos2111_02, 0x2111, 0x02, 32);
+    if (hasEnc1Vel)
+        add(TxField::Enc1Vel2111_03, 0x2111, 0x03, 32);
+    if (hasEnc2Pos)
+        add(TxField::Enc2Pos2113_02, 0x2113, 0x02, 32);
+    if (hasEnc2Vel)
+        add(TxField::Enc2Vel2113_03, 0x2113, 0x03, 32);
+
+    wr8(s, 0x1A00, 0x00, m);
+
+    // Assign to SM
+    wr16(s, 0x1C12, 1, 0x1600);
+    wr16(s, 0x1C13, 1, 0x1A00);
+    wr8(s, 0x1C12, 0x00, 1);
+    wr8(s, 0x1C13, 0x00, 1);
 
     return Error::NoError;
 }
@@ -173,11 +204,13 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     m_expectedWkc = ec_group[0].outputsWKC * 2 + ec_group[0].inputsWKC; // ▲ after OP
 
     m_rxPtr.assign(ec_slavecount, nullptr);
-    m_txPtr.assign(ec_slavecount, nullptr);
+    m_txRaw.assign(ec_slavecount, nullptr);
+    m_txMap.assign(ec_slavecount, {});
+
     for (int s = 1; s <= ec_slavecount; ++s)
     {
         m_rxPtr[s - 1] = reinterpret_cast<RxPDO*>(ec_slave[s].outputs);
-        m_txPtr[s - 1] = reinterpret_cast<TxPDO*>(ec_slave[s].inputs);
+        m_txRaw[s - 1] = reinterpret_cast<uint8_t*>(ec_slave[s].inputs);
     }
 
     m_runWatch = true;
@@ -207,13 +240,14 @@ RxPDO* EthercatManager::getRxPDO(int slaveIdx) noexcept
 {
     return indexValid(slaveIdx) ? m_rxPtr[slaveIdx - 1] : nullptr;
 }
-const TxPDO* EthercatManager::getTxPDO(int slaveIdx) const noexcept
+
+TxView EthercatManager::getTxView(int slaveIdx) const noexcept
 {
-    return indexValid(slaveIdx) ? m_txPtr[slaveIdx - 1] : nullptr;
-}
-TxPDO* EthercatManager::getTxPDO(int slaveIdx) noexcept
-{
-    return indexValid(slaveIdx) ? m_txPtr[slaveIdx - 1] : nullptr;
+    if (!indexValid(slaveIdx))
+    {
+        return TxView(nullptr, nullptr);
+    }
+    return TxView(m_txRaw[slaveIdx - 1], &m_txMap[slaveIdx - 1]);
 }
 
 void EthercatManager::errorMonitorLoop() noexcept
