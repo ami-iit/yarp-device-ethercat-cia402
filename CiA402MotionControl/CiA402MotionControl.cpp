@@ -1488,10 +1488,6 @@ void CiA402MotionControl::run()
                 // entering a control mode: arm latches and clear "has SP" flags
                 m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
                 m_impl->setPoints.reset(j);
-
-                /*                 std::lock_guard<std::mutex> sp(m_impl->setPoints.mutex);
-                                m_impl->setPoints.hasVelSP[j] = false;
-                                m_impl->setPoints.hasTorqueSP[j] = false; */
             }
 
             m_impl->controlModeState.active[j] = newActive;
