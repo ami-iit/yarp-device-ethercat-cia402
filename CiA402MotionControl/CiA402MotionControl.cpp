@@ -101,6 +101,8 @@ struct CiA402MotionControl::Impl
     std::vector<VelSrc> velSrcJoint, velSrcMotor; // from config (0x2011:04 semantics)
     std::vector<SensorSrc> posLoopSrc; // drive internal pos loop source (0x2012:09)
     std::vector<SensorSrc> velLoopSrc; // drive internal vel loop source (0x2011:05)
+    std::vector<double> velToDegS; // multiply device value to get deg/s
+    std::vector<double> degSToVel; // multiply deg/s to get device value
 
     struct VariablesReadFromMotors
     {
@@ -264,6 +266,65 @@ struct CiA402MotionControl::Impl
                   enc2ResInv[j]);
         }
 
+        return true;
+    }
+
+    static std::tuple<double, double, const char*> decode60A9(uint32_t v)
+    {
+        // Known Synapticon encodings (prefix scales; middle bytes encode rev, last timebase)
+        // RPM family
+        if (v == 0x00B44700u)
+            return {6.0, 1.0 / 6.0, "1 RPM"}; // 1 rpm -> 6 deg/s
+        if (v == 0xFFB44700u)
+            return {0.6, 1.0 / 0.6, "0.1 RPM"};
+        if (v == 0xFEB44700u)
+            return {0.06, 1.0 / 0.06, "0.01 RPM"};
+        if (v == 0xFDB44700u)
+            return {0.006, 1.0 / 0.006, "0.001 RPM"};
+        // RPS family
+        if (v == 0x00B40300u)
+            return {360.0, 1.0 / 360.0, "1 RPS"};
+        if (v == 0xFFB40300u)
+            return {36.0, 1.0 / 36.0, "0.1 RPS"};
+        if (v == 0xFEB40300u)
+            return {3.6, 1.0 / 3.6, "0.01 RPS"};
+        if (v == 0xFDB40300u)
+            return {0.36, 1.0 / 0.36, "0.001 RPS"};
+
+        // Fallback (spec says default is 1 RPM). Warn & assume 1 RPM.
+        return {6.0, 1.0 / 6.0, "UNKNOWN (assume 1 RPM)"};
+    }
+
+    bool readSiVelocityUnits()
+    {
+        this->velToDegS.resize(numAxes);
+        this->degSToVel.resize(numAxes);
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int s = firstSlave + int(j);
+            // default 1 RPM See
+            // https://doc.synapticon.com/circulo/sw5.1/objects_html/6xxx/60a9.html?Highlight=0x60a9
+            uint32_t raw = 0x00B44700u;
+            auto e = ethercatManager.readSDO<uint32_t>(s, 0x60A9, 0x00, raw);
+
+            auto [toDegS, toDev, name] = this->decode60A9(raw);
+            velToDegS[j] = toDegS;
+            degSToVel[j] = toDev;
+
+            if (e == ::CiA402::EthercatManager::Error::NoError)
+                yDebug("Joint %s: axis %zu: 0x60A9=0x%08X → unit %s (1 unit = %.6f deg/s)",
+                      kClassName.data(),
+                      j,
+                      raw,
+                      name,
+                      toDegS);
+            else
+                yWarning("Joint %s: axis %zu: failed to read 0x60A9, assuming 1 RPM (1 unit = 6 "
+                         "deg/s)",
+                         kClassName.data(),
+                         j);
+        }
         return true;
     }
 
@@ -442,7 +503,7 @@ struct CiA402MotionControl::Impl
                     }
 
                     // Convert deg/s → rpm on the selected shaft for 0x60FF
-                    const double rpm = shaft_deg_s * DEG_PER_SEC_TO_RPM;
+                    const double rpm = shaft_deg_s * this->degSToVel[j];
                     rx->TargetVelocity = static_cast<int32_t>(std::llround(rpm));
                 }
             }
@@ -565,30 +626,31 @@ struct CiA402MotionControl::Impl
             };
             // Convert velocity source to deg/s on its own physical shaft
             auto velDegSOnOwnShaft = [&](VelSrc s) -> std::pair<double, Mount> {
+                const double k = this->velToDegS[j]; // 1 device unit -> k deg/s
                 switch (s)
                 {
                 case Impl::VelSrc::Enc1:
                     // Direct encoder 1 velocity (already in RPM from PDO)
-                    return {double(vE1) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
+                    return {double(vE1) * k, enc1Mount[j]};
 
                 case Impl::VelSrc::Enc2:
                     // Direct encoder 2 velocity (already in RPM from PDO)
-                    return {double(vE2) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
+                    return {double(vE2) * k, enc2Mount[j]};
 
                 case Impl::VelSrc::S606C:
                 default: {
                     // CiA402 standard velocity - interpretation depends on drive's velocity loop
                     // source
                     if (velLoopSrc[j] == Impl::SensorSrc::Enc1)
-                        return {double(v606C) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
+                        return {double(v606C) * k, enc1Mount[j]};
                     if (velLoopSrc[j] == Impl::SensorSrc::Enc2)
-                        return {double(v606C) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
+                        return {double(v606C) * k, enc2Mount[j]};
 
                     // Fallback: if loop source unknown, prefer enc1 if available
                     if (enc1Mount[j] != Impl::Mount::None)
-                        return {double(v606C) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
+                        return {double(v606C) * k, enc1Mount[j]};
                     if (enc2Mount[j] != Impl::Mount::None)
-                        return {double(v606C) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
+                        return {double(v606C) * k, enc2Mount[j]};
                     return {0.0, Impl::Mount::None};
                 }
                 }
@@ -1229,6 +1291,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     if (!m_impl->readEncoderResolutions())
     {
         yError("%s: failed to read encoder resolutions", Impl::kClassName.data());
+        return false;
+    }
+    if (!m_impl->readSiVelocityUnits())
+    {
+        yError("%s: failed to read velocity conversions", Impl::kClassName.data());
         return false;
     }
     if (!m_impl->readGearRatios())
