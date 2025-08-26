@@ -340,6 +340,20 @@ struct CiA402MotionControl::Impl
             enc1ResInv[j] = enc1Res[j] ? 1.0 / double(enc1Res[j]) : 0.0;
             enc2ResInv[j] = enc2Res[j] ? 1.0 / double(enc2Res[j]) : 0.0;
         }
+
+        // Print the info we just as yarp debug messages
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            yInfo("Joint %s: enc1Res[%zu] = %u  (inv %.9f),  enc2Res[%zu] = %u  (inv %.9f)",
+                  kClassName.data(),
+                  j,
+                  enc1Res[j],
+                  enc1ResInv[j],
+                  j,
+                  enc2Res[j],
+                  enc2ResInv[j]);
+        }
+
         return true;
     }
 
@@ -830,6 +844,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->enc1Mount.assign(m_impl->numAxes, parseMount(enc1M));
     m_impl->enc2Mount.assign(m_impl->numAxes, parseMount(enc2M));
 
+
+    yInfo("%s: position feedback (joint) = %s",
+          Impl::kClassName.data(),
+          (posDefJoint == "6064") ? "6064 (loop source)" : posDefJoint.c_str());
+
     // Per-axis overrides: position_feedback_joint_0, ... etc.
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
@@ -910,6 +929,12 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         const int s = m_impl->firstSlave + int(j);
         return m_impl->ethercatManager.getTxView(s).has(CiA402::TxField::Enc2Vel2113_03);
     };
+
+    yInfo("%s: using %zu axes, slaves %d ... %d",
+          Impl::kClassName.data(),
+          m_impl->numAxes,
+          m_impl->firstSlave,
+          m_impl->firstSlave + int(m_impl->numAxes) - 1);
 
     // Resize + fill loop-source vectors
     m_impl->posLoopSrc.resize(m_impl->numAxes, SensorSrc::Unknown);

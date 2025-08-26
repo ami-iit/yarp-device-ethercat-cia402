@@ -118,6 +118,8 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
     wr8(s, 0x1C12, 0x00, 1);
     wr8(s, 0x1C13, 0x00, 1);
 
+    yInfo("configured PDOs for slave %d: %d bytes Rx, %d bytes Tx", s, 13, byteOff);
+
     return Error::NoError;
 }
 
@@ -144,9 +146,15 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     }
     yInfo("found %d slaves", ec_slavecount);
 
+    m_rxPtr.assign(ec_slavecount, nullptr);
+    m_txRaw.assign(ec_slavecount, nullptr);
+    m_txMap.assign(ec_slavecount, {});
+
     /* ---------- (re)build PDO mapping while slaves are in PRE-OP ---------- */
     for (int s = 1; s <= ec_slavecount; ++s)
     {
+        yInfo("configuring slave %d: %s", s, ec_slave[s].name);
+
         if (configurePDOMapping(s) != Error::NoError)
         {
             ec_close();
@@ -202,10 +210,6 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
     /* ---------- final book-keeping -------------------------------------- */
     m_expectedWkc = ec_group[0].outputsWKC * 2 + ec_group[0].inputsWKC; // ▲ after OP
-
-    m_rxPtr.assign(ec_slavecount, nullptr);
-    m_txRaw.assign(ec_slavecount, nullptr);
-    m_txMap.assign(ec_slavecount, {});
 
     for (int s = 1; s <= ec_slavecount; ++s)
     {
