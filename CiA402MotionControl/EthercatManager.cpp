@@ -38,9 +38,10 @@ EthercatManager::~EthercatManager()
     {
         m_watchThread.join();
     }
-    if (m_initialized)
+    // Close only if port was opened
+    if (m_portOpen)
     {
-        ec_close();
+        ecx_close(&m_ctx);
     }
 }
 
@@ -48,14 +49,14 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
 {
     // Helper lambdas to write SDO values of different sizes to slave 's'
     // These wrap ec_SDOwrite with proper type casting and timeout handling
-    auto wr8 = [s](uint16_t idx, uint8_t sub, uint8_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    auto wr8 = [this, s](uint16_t idx, uint8_t sub, uint8_t v) {
+        return ecx_SDOwrite(&m_ctx, s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
     };
-    auto wr16 = [s](uint16_t idx, uint8_t sub, uint16_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    auto wr16 = [this, s](uint16_t idx, uint8_t sub, uint16_t v) {
+        return ecx_SDOwrite(&m_ctx, s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
     };
-    auto wr32 = [s](uint16_t idx, uint8_t sub, uint32_t v) {
-        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    auto wr32 = [this, s](uint16_t idx, uint8_t sub, uint32_t v) {
+        return ecx_SDOwrite(&m_ctx, s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
     };
 
     // --------- Clear existing PDO assignments ----------
@@ -213,11 +214,11 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
 
     // Log the mapping result for debugging
     yDebug("Slave %d '%s': configured %d RxPDOs, %d TxPDOs (%d bytes input)",
-           s, // Slave index
-           ec_slave[s].name, // Slave product name
-           1, // Always 1 RxPDO
-           static_cast<int>(txUsed.size()), // Number of TxPDOs created
-           static_cast<int>(byteOff)); // Total input data size
+           s,
+           m_ctx.slavelist[s].name,
+           1,
+           static_cast<int>(txUsed.size()),
+           static_cast<int>(byteOff));
 
     return Error::NoError;
 }
@@ -235,64 +236,65 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // --------- Initialize SOEM EtherCAT stack ----------
     // SOEM (Simple Open EtherCAT Master) is the underlying EtherCAT library
     yInfo("EtherCAT: init on %s", ifname.c_str());
-    if (ec_init(ifname.c_str()) <= 0)
+    if (ecx_init(&m_ctx, ifname.c_str()) <= 0)
     {
         return Error::InitFailed;
     }
 
+    m_portOpen = true;
+
     // --------- Discover slaves and transition to PRE-OP ----------
     // This scans the EtherCAT ring and identifies all connected slaves
     // Slaves start in INIT state and are transitioned to PRE-OP for configuration
-    if (ec_config_init(false) <= 0)
+    if (ecx_config_init(&m_ctx) <= 0)
     {
-        ec_close();
+        ecx_close(&m_ctx);
+        m_portOpen = false;
         return Error::NoSlavesFound;
     }
-    yInfo("found %d slaves", ec_slavecount);
+    yInfo("found %d slaves", (m_ctx.slavecount ? m_ctx.slavecount : 0));
 
     // --------- Validate slave capabilities ----------
     // Before we can configure PDOs via SDO, we need to ensure each slave:
     // 1. Is in PRE-OP state (required for mailbox communication)
     // 2. Supports CoE (CANopen over EtherCAT) mailbox protocol
     // 3. Supports SDO (Service Data Objects) for configuration
-    for (int s = 1; s <= ec_slavecount; ++s)
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
         // Ensure slave reached PRE-OP state (required for mailbox access)
-        ec_statecheck(s, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
+        ecx_statecheck(&m_ctx, s, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
 
-        // Check if slave supports CoE mailbox protocol
-        if (!(ec_slave[s].mbx_proto & ECT_MBXPROT_COE))
+        if (!(m_ctx.slavelist[s].mbx_proto & ECT_MBXPROT_COE))
         {
-            yError("Slave %d '%s' has no CoE mailbox → cannot use SDO", s, ec_slave[s].name);
-            ec_close();
+            yError("Slave %d '%s' has no CoE mailbox → cannot use SDO", s, m_ctx.slavelist[s].name);
             return Error::ConfigFailed;
         }
 
         // Check if slave supports SDO within CoE
-        if (!(ec_slave[s].CoEdetails & ECT_COEDET_SDO))
+        if (!(m_ctx.slavelist[s].CoEdetails & ECT_COEDET_SDO))
         {
-            yError("Slave %d '%s' has no SDO support", s, ec_slave[s].name);
-            ec_close();
+            yError("Slave %d '%s' has no SDO support", s, m_ctx.slavelist[s].name);
+            ecx_close(&m_ctx);
             return Error::ConfigFailed;
         }
     }
 
     // --------- Initialize internal data structures ----------
     // Prepare containers for per-slave PDO pointers and mappings
-    m_rxPtr.assign(ec_slavecount, nullptr); // RxPDO pointers (master → slave)
-    m_txRaw.assign(ec_slavecount, nullptr); // Raw TxPDO buffers (slave → master)
-    m_txMap.assign(ec_slavecount, {}); // TxPDO field mappings
+    m_rxPtr.assign(m_ctx.slavecount, nullptr); // RxPDO pointers (master → slave)
+    m_txRaw.assign(m_ctx.slavecount, nullptr); // Raw TxPDO buffers (slave → master)
+    m_txMap.assign(m_ctx.slavecount, {}); // TxPDO field mappings
 
     // --------- Configure PDO mappings for each slave ----------
     // This is the most critical phase: we configure how process data is organized
     // in the cyclic exchange. Must be done while slaves are in PRE-OP state.
-    for (int s = 1; s <= ec_slavecount; ++s)
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
-        yInfo("configuring slave %d: %s", s, ec_slave[s].name);
+        yInfo("configuring slave %d: %s", s, m_ctx.slavelist[s].name);
 
         if (configurePDOMapping(s) != Error::NoError)
         {
-            ec_close();
+
             return Error::ConfigFailed;
         }
     }
@@ -300,14 +302,14 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // --------- Build process data image ----------
     // SOEM creates a contiguous memory buffer containing all slave PDOs
     // This "IO map" is used for efficient cyclic data exchange
-    if (ec_config_map(m_ioMap) <= 0)
+    if (ecx_config_map_group(&m_ctx, m_ioMap, 0) <= 0)
     {
-        ec_close();
+        ecx_close(&m_ctx);
         return Error::ConfigFailed;
     }
 
     // Configure distributed clocks for time synchronization (optional but recommended)
-    ec_configdc();
+    ecx_configdc(&m_ctx);
 
     // =========================================================================
     // SAFE-OP STATE TRANSITION
@@ -320,22 +322,23 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     constexpr std::size_t ALL = 0; // 0 == broadcast to all slaves
 
     // Request SAFE-OP state for all slaves
-    ec_slave[ALL].state = EC_STATE_SAFE_OP;
-    ec_writestate(ALL);
-    ec_statecheck(ALL, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4);
+    m_ctx.slavelist[ALL].state = EC_STATE_SAFE_OP;
+    ecx_writestate(&m_ctx, ALL);
+    ecx_statecheck(&m_ctx, ALL, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4);
 
-    if (ec_slave[ALL].state != EC_STATE_SAFE_OP)
+    if (m_ctx.slavelist[ALL].state != EC_STATE_SAFE_OP)
     {
-        yError("Ring failed to reach SAFE-OP (AL-status 0x%04x)", ec_slave[ALL].ALstatuscode);
-        ec_close();
+        yError("Ring failed to reach SAFE-OP (AL-status 0x%04x)",
+               m_ctx.slavelist[ALL].ALstatuscode);
+        ecx_close(&m_ctx);
         return Error::SlavesNotOp;
     }
 
     // --------- Validate PDO mapping with dummy cycle ----------
     // Many drives validate their PDO mapping during the first data exchange
     // This dummy send/receive ensures the mapping is accepted before going to OP
-    ec_send_processdata();
-    ec_receive_processdata(EC_TIMEOUTRET);
+    ecx_send_processdata(&m_ctx);
+    ecx_receive_processdata(&m_ctx, EC_TIMEOUTRET);
 
     // =========================================================================
     // OPERATIONAL STATE TRANSITION
@@ -346,8 +349,8 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // - Full cyclic operation begins
 
     // Request OPERATIONAL state for all slaves
-    ec_slave[ALL].state = EC_STATE_OPERATIONAL;
-    ec_writestate(ALL);
+    m_ctx.slavelist[ALL].state = EC_STATE_OPERATIONAL;
+    ecx_writestate(&m_ctx, ALL);
 
     // --------- Wait for OPERATIONAL state with timeout ----------
     // Some drives take time to complete their internal initialization
@@ -356,14 +359,13 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     const int pollTimeout = 50'000; // 50 ms per poll = ~10 second total timeout
     do
     {
-        ec_statecheck(ALL, EC_STATE_OPERATIONAL, pollTimeout);
-    } while (attempts-- && ec_slave[ALL].state != EC_STATE_OPERATIONAL);
+        ecx_statecheck(&m_ctx, ALL, EC_STATE_OPERATIONAL, pollTimeout);
+    } while (attempts-- && m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL);
 
     // Check if transition was successful
-    if (ec_slave[ALL].state != EC_STATE_OPERATIONAL)
+    if (m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL)
     {
-        yError("Ring failed to reach OP (AL-status 0x%04x)", ec_slave[ALL].ALstatuscode);
-        ec_close();
+        yError("Ring failed to reach OP (AL-status 0x%04x)", m_ctx.slavelist[ALL].ALstatuscode);
         return Error::SlavesNotOp;
     }
 
@@ -375,19 +377,19 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // Working Counter (WKC) is EtherCAT's mechanism for detecting communication errors
     // Each successful PDO exchange increments the counter by the number of slaves involved
     // We calculate the expected value based on SOEM's internal group configuration
-    m_expectedWkc = ec_group[0].outputsWKC * 2 + ec_group[0].inputsWKC;
+    m_expectedWkc = m_ctx.grouplist[0].outputsWKC * 2 + m_ctx.grouplist[0].inputsWKC;
 
     // --------- Set up PDO access pointers ----------
     // Now that the IO map is finalized, we can cache pointers to each slave's
     // PDO areas for efficient runtime access
-    for (int s = 1; s <= ec_slavecount; ++s)
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
         // Cache pointer to RxPDO (master → slave data) with proper type casting
-        m_rxPtr[s - 1] = reinterpret_cast<RxPDO*>(ec_slave[s].outputs);
+        m_rxPtr[s - 1] = reinterpret_cast<RxPDO*>(m_ctx.slavelist[s].outputs);
 
         // Cache pointer to raw TxPDO buffer (slave → master data)
         // We use raw uint8_t* because TxPDO layout is dynamic and accessed via TxView
-        m_txRaw[s - 1] = reinterpret_cast<uint8_t*>(ec_slave[s].inputs);
+        m_txRaw[s - 1] = reinterpret_cast<uint8_t*>(m_ctx.slavelist[s].inputs);
     }
 
     // --------- Start background error monitoring ----------
@@ -411,8 +413,8 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
 
     // Perform cyclic process data exchange with thread safety
     std::lock_guard<std::mutex> lk(m_ioMtx);
-    ec_send_processdata();
-    m_lastWkc = ec_receive_processdata(EC_TIMEOUTRET);
+    ecx_send_processdata(&m_ctx);
+    m_lastWkc = ecx_receive_processdata(&m_ctx, EC_TIMEOUTRET);
     return (m_lastWkc >= m_expectedWkc) ? Error::NoError : Error::PdoExchangeFailed;
 }
 
@@ -439,16 +441,28 @@ void EthercatManager::errorMonitorLoop() noexcept
     {
         {
             std::lock_guard<std::mutex> lk(m_ioMtx);
-            ec_readstate();
-            for (int s = 1; s <= ec_slavecount; ++s)
+            ecx_readstate(&m_ctx);
+            for (int s = 1; s <= m_ctx.slavecount; ++s)
             {
-                if (ec_slave[s].state != EC_STATE_OPERATIONAL)
+                if (m_ctx.slavelist[s].state != EC_STATE_OPERATIONAL)
                 {
-                    ec_slave[s].state = EC_STATE_OPERATIONAL;
-                    ec_writestate(s);
+                    m_ctx.slavelist[s].state = EC_STATE_OPERATIONAL;
+                    ecx_writestate(&m_ctx, s);
                 }
             }
         }
         std::this_thread::sleep_for(10ms);
     }
+}
+
+std::string EthercatManager::getName(int slaveIndex) const noexcept
+{
+    if (!indexValid(slaveIndex))
+        return {};
+    return m_ctx.slavelist[slaveIndex].name;
+}
+
+bool EthercatManager::indexValid(int slaveIndex) const noexcept
+{
+    return slaveIndex >= 1 && slaveIndex <= m_ctx.slavecount;
 }
