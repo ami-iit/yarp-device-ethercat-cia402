@@ -7,4 +7,8 @@ BSD-3-Clause license. -->
     <param name="num_axes">1</param>
     <param name="enc1_mount">( "motor" )</param>
     <param name="enc2_mount">( "joint" )</param>
+    <param name="position_feedback_motor"> ( "6064" )</param>
+    <param name="velocity_feedback_motor"> ( "606C" )</param>    
+    <param name="position_feedback_joint"> ( "6064" )</param>
+    <param name="velocity_feedback_joint"> ( "606C" )</param>
 </device>
