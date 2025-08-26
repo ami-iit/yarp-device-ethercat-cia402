@@ -1,22 +1,6 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-/******************************************************************************************
- * CiA402MotionControl.cpp                                                                 *
- *                                                                                        *
- * This file shows implement a YARP DeviceDriver that talks to a ring of                  *
- * CiA-402 EtherCAT drives via SOEM.                                                      *
- *                                                                                        *
- * Major changes vs. the draft you sent:                                                  *
- *  • Added all the missing data members (expected_wkc, firstSlave, vectors …).           *
- *  • Parameters now come from the .ini file:                                             *
- *      - ifname                : mandatory   (string)                                    *
- *      - num_axes              : mandatory   (int)                                       *
- *      - first_slave           : optional    (int,  default = 1)                         *
- *      - expected_slave_name   : optional    (string, used for sanity checks)            *
- *  • Added lots of #include-s and forward declarations so the file is self-contained.    *
- *****************************************************************************************/
-
 #include "CiA402MotionControl.h"
 #include "CiA402StateMachine.h"
 #include "EthercatManager.h"
@@ -29,6 +13,7 @@
 #include <ethercat.h>
 
 // STD
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -37,135 +22,60 @@
 #include <string_view>
 #include <vector>
 
-namespace
-{
-
-// clang-format off
-enum class PosSrc { S6064, Enc1, Enc2 };
-enum class VelSrc { S606C, Enc1, Enc2 };
-enum class Mount { None, Motor, Joint };
-enum class SensorSrc { Unknown, Enc1, Enc2 };
-// clang-format on
-
-inline std::string describe603F(uint16_t code)
-{
-    switch (code)
-    {
-    case 0x0000:
-        return "No fault";
-
-    // === Your explicit mappings ===
-    case 0x2220:
-        return "Continuous over current (device internal)";
-    case 0x2250:
-        return "Short circuit (device internal)";
-    case 0x2350:
-        return "Load level fault (I2t, thermal state)";
-    case 0x2351:
-        return "Load level warning (I2t, thermal state)";
-    case 0x3130:
-        return "Phase failure";
-    case 0x3131:
-        return "Phase failure L1";
-    case 0x3132:
-        return "Phase failure L2";
-    case 0x3133:
-        return "Phase failure L3";
-    case 0x3210:
-        return "DC link over-voltage";
-    case 0x3220:
-        return "DC link under-voltage";
-    case 0x3331:
-        return "Field circuit interrupted";
-    case 0x4210:
-        return "Excess temperature device";
-    case 0x4310:
-        return "Excess temperature drive";
-    case 0x5200:
-        return "Control";
-    case 0x5300:
-        return "Operating unit";
-    case 0x6010:
-        return "Software reset (watchdog)";
-    case 0x6320:
-        return "Parameter error";
-    case 0x7121:
-        return "Motor blocked";
-    case 0x7300:
-        return "Sensor";
-    case 0x7303:
-        return "Resolver 1 fault";
-    case 0x7304:
-        return "Resolver 2 fault";
-    case 0x7500:
-        return "Communication";
-    case 0x8612:
-        return "Positioning controller (reference limit)";
-    case 0xF002:
-        return "Sub-synchronous run";
-
-    default:
-        // === Family fallbacks (upper byte) ===
-        switch (code & 0xFF00)
-        {
-        case 0x2200:
-            return "Current/device-internal fault";
-        case 0x2300:
-            return "Motor/output circuit fault";
-        case 0x3100:
-            return "Phase/mains supply issue";
-        case 0x3200:
-            return "DC link voltage issue";
-        case 0x3300:
-            return "Field/armature circuit issue";
-        case 0x4200:
-            return "Excess temperature (device)";
-        case 0x4300:
-            return "Excess temperature (drive)";
-        case 0x5200:
-            return "Control device hardware / limits";
-        case 0x5300:
-            return "Operating unit / safety";
-        case 0x6000:
-            return "Software reset / watchdog";
-        case 0x6300:
-            return "Parameter/configuration error";
-        case 0x7100:
-            return "Motor blocked / mechanical issue";
-        case 0x7300:
-            return "Sensor/encoder fault";
-        case 0x7500:
-            return "Communication/internal";
-        case 0x8600:
-            return "Positioning controller (vendor specific)";
-        case 0xF000:
-            return "Timing/performance warning";
-        default: {
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "Unknown 0x603F error: 0x%04X", code);
-            return std::string(buf);
-        }
-        }
-    }
-}
-
-} // namespace
-
 namespace yarp::dev
 {
 
+/**
+ * Private implementation holding configuration, runtime state, and helpers.
+ * Concurrency:
+ *  - variables.mutex guards feedback snapshots returned to YARP APIs
+ *  - controlModeState.mutex guards target/active control modes
+ *  - setPoints.mutex guards user setpoints and their first‑cycle latches
+ * Units:
+ *  - Positions: degrees (joint and motor)
+ *  - Velocities: degrees/second
+ *  - Torques: joint Nm (converted to motor Nm and then to per‑thousand for PDOs)
+ */
 struct CiA402MotionControl::Impl
 {
+    enum class PosSrc
+    {
+        S6064, // Use CiA 402 Position Actual Value (0x6064)
+        Enc1, // Use encoder 1 position (0x2111:02 in PDO)
+        Enc2 // Use encoder 2 position (0x2113:02 in PDO)
+    };
+    // Which object supplies velocity feedback for a given consumer (joint/motor)
+    enum class VelSrc
+    {
+        S606C, // Use CiA 402 Velocity Actual Value (0x606C) [rpm]
+        Enc1, // Use encoder 1 velocity (0x2111:03) [rpm]
+        Enc2 // Use encoder 2 velocity (0x2113:03) [rpm]
+    };
+    // Where each encoder is physically mounted relative to the gearbox
+    enum class Mount
+    {
+        None, // Not present / unknown
+        Motor, // Pre‑gearbox (motor shaft)
+        Joint // Post‑gearbox (load/joint shaft)
+    };
+    // Which sensor the drive uses internally for the closed loop
+    enum class SensorSrc
+    {
+        Unknown, // Not reported via SDOs (fallback heuristics apply)
+        Enc1, // Internal loop uses encoder 1
+        Enc2 // Internal loop uses encoder 2
+    };
+
     // Human-readable name for log messages
     static constexpr std::string_view kClassName = "CiA402MotionControl";
 
     // EtherCat manager
     ::CiA402::EthercatManager ethercatManager;
 
-    // Constants
-    static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // 1 / DEG_PER_SEC_TO_RPM
-    static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // 1 / RPM_TO_DEG_PER_SEC
-    static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // 1 / 1'000'000
+    // Constants (unit conversions used throughout)
+    static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // rpm → deg/s
+    static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // deg/s → rpm
+    static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
 
     // SOEM needs one contiguous memory area for every byte that travels on the bus.
     char ioMap[4096] = {0};
@@ -180,17 +90,17 @@ struct CiA402MotionControl::Impl
     //--------------------------------------------------------------------------
     // Runtime bookkeeping
     //--------------------------------------------------------------------------
-    std::vector<double> gearRatio; //  load-revs : motor-revs
+    std::vector<double> gearRatio; //  motor-revs : load-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
     std::vector<double> ratedMotorTorqueNm; // [Nm] from 0x6076
     std::vector<double> maxMotorTorqueNm; // [Nm] from 0x6072
-    std::vector<uint32_t> enc1Res, enc2Res; // from 0x3005, 0x3006
+    std::vector<uint32_t> enc1Res, enc2Res; // from 0x2110, 0x2112
     std::vector<double> enc1ResInv, enc2ResInv; // 1 / enc?Res
-    std::vector<Mount> enc1Mount, enc2Mount; // from 0x3003
-    std::vector<PosSrc> posSrcJoint, posSrcMotor; // from 0x2012:08
-    std::vector<VelSrc> velSrcJoint, velSrcMotor; // from 0x2011:04
-    std::vector<SensorSrc> posLoopSrc; // 0x2012:09
-    std::vector<SensorSrc> velLoopSrc; // 0x2011:05
+    std::vector<Mount> enc1Mount, enc2Mount; // from config (and SDO sanity)
+    std::vector<PosSrc> posSrcJoint, posSrcMotor; // from config (0x2012:08 semantics)
+    std::vector<VelSrc> velSrcJoint, velSrcMotor; // from config (0x2011:04 semantics)
+    std::vector<SensorSrc> posLoopSrc; // drive internal pos loop source (0x2012:09)
+    std::vector<SensorSrc> velLoopSrc; // drive internal vel loop source (0x2011:05)
 
     struct VariablesReadFromMotors
     {
@@ -452,9 +362,14 @@ struct CiA402MotionControl::Impl
 
     bool setSetPoints()
     {
-
         std::lock_guard<std::mutex> lock(this->setPoints.mutex);
 
+        /**
+         * Push user setpoints into RxPDOs according to the active control mode.
+         *  - Torque (CST): joint Nm → motor Nm → per‑thousand of rated motor torque (0x6071)
+         *  - Velocity (CSV): joint deg/s → loop‑shaft deg/s (mount aware) → rpm (0x60FF)
+         * First‑cycle latches (velLatched/trqLatched) zero the command once when entering.
+         */
         for (size_t j = 0; j < this->numAxes; ++j)
         {
             const int s = firstSlave + int(j);
@@ -503,22 +418,22 @@ struct CiA402MotionControl::Impl
 
                     switch (velLoopSrc[j])
                     {
-                    case SensorSrc::Enc1:
-                        if (enc1Mount[j] == Mount::Motor)
+                    case Impl::SensorSrc::Enc1:
+                        if (enc1Mount[j] == Impl::Mount::Motor)
                             shaft_deg_s = joint_deg_s * gearRatio[j];
-                        else if (enc1Mount[j] == Mount::Joint)
+                        else if (enc1Mount[j] == Impl::Mount::Joint)
                             shaft_deg_s = joint_deg_s;
-                        // Mount::None → leave default (best-effort)
+                        // Impl::Mount::None → leave default (best-effort)
                         break;
 
-                    case SensorSrc::Enc2:
-                        if (enc2Mount[j] == Mount::Motor)
+                    case Impl::SensorSrc::Enc2:
+                        if (enc2Mount[j] == Impl::Mount::Motor)
                             shaft_deg_s = joint_deg_s * gearRatio[j];
-                        else if (enc2Mount[j] == Mount::Joint)
+                        else if (enc2Mount[j] == Impl::Mount::Joint)
                             shaft_deg_s = joint_deg_s;
                         break;
 
-                    case SensorSrc::Unknown:
+                    case Impl::SensorSrc::Unknown:
                     default:
                         // Heuristic fallback: if we *know* the configured velocity feedback
                         // is motor-mounted, assume motor shaft; otherwise joint shaft.
@@ -539,18 +454,37 @@ struct CiA402MotionControl::Impl
     {
         std::lock_guard<std::mutex> lock(this->variables.mutex);
 
+        // =====================================================================
+        // SHAFT TRANSFORMATION HELPERS
+        // =====================================================================
+        // These lambdas handle the complex coordinate transformations between
+        // motor shaft and joint/load shaft based on encoder mounting and gear ratios
+
+        // Position transformation: converts degrees on a specific shaft to the requested side
         auto shaftFromMount_pos = [&](double deg, Mount m, size_t j, bool asMotor) -> double {
-            // deg is on the physical shaft of the chosen source
-            if (m == Mount::Motor)
-                return asMotor ? deg : deg * gearRatioInv[j];
-            if (m == Mount::Joint)
-                return asMotor ? deg * gearRatio[j] : deg;
-            return 0.0;
+            // deg = input position in degrees on the physical shaft of mount 'm'
+            // asMotor = true if we want result on motor shaft, false for joint shaft
+
+            if (m == Impl::Mount::Motor)
+            {
+                // Input is on motor shaft
+                return asMotor ? deg // Motor->Motor: no change
+                               : deg * gearRatioInv[j]; // Motor->Joint: divide by gear ratio
+            }
+            if (m == Impl::Mount::Joint)
+            {
+                // Input is on joint/load shaft
+                return asMotor ? deg * gearRatio[j] // Joint->Motor: multiply by gear ratio
+                               : deg; // Joint->Joint: no change
+            }
+            return 0.0; // Impl::Mount::None or invalid
         };
+
+        // Velocity transformation: same logic as position but for velocities
         auto shaftFromMount_vel = [&](double degs, Mount m, size_t j, bool asMotor) -> double {
-            if (m == Mount::Motor)
+            if (m == Impl::Mount::Motor)
                 return asMotor ? degs : degs * gearRatioInv[j];
-            if (m == Mount::Joint)
+            if (m == Impl::Mount::Joint)
                 return asMotor ? degs * gearRatio[j] : degs;
             return 0.0;
         };
@@ -560,114 +494,172 @@ struct CiA402MotionControl::Impl
             const int s = this->firstSlave + int(j);
             auto tx = this->ethercatManager.getTxView(s);
 
-            // raw reads
-            const int32_t p6064 = tx.get<int32_t>(CiA402::TxField::Position6064, 0);
-            const int32_t pE1 = tx.has(CiA402::TxField::Enc1Pos2111_02)
+            // =====================================================================
+            // RAW DATA EXTRACTION FROM PDOs
+            // =====================================================================
+            // Read raw encoder counts and velocities from the EtherCAT PDOs
+            // These are the fundamental data sources before any interpretation
+
+            // Position data (in encoder counts)
+            const int32_t p6064 = tx.get<int32_t>(CiA402::TxField::Position6064, 0); // CiA402
+                                                                                     // standard
+                                                                                     // position
+            const int32_t pE1 = tx.has(CiA402::TxField::Enc1Pos2111_02) // Encoder 1 position (if
+                                                                        // mapped)
                                     ? tx.get<int32_t>(CiA402::TxField::Enc1Pos2111_02)
                                     : 0;
-            const int32_t pE2 = tx.has(CiA402::TxField::Enc2Pos2113_02)
+            const int32_t pE2 = tx.has(CiA402::TxField::Enc2Pos2113_02) // Encoder 2 position (if
+                                                                        // mapped)
                                     ? tx.get<int32_t>(CiA402::TxField::Enc2Pos2113_02)
                                     : 0;
 
-            const int32_t v606C = tx.get<int32_t>(CiA402::TxField::Velocity606C, 0);
-            const int32_t vE1 = tx.has(CiA402::TxField::Enc1Vel2111_03)
+            // Velocity data (in RPM for CiA402, encoder-specific units for others)
+            const int32_t v606C = tx.get<int32_t>(CiA402::TxField::Velocity606C, 0); // CiA402
+                                                                                     // standard
+                                                                                     // velocity
+                                                                                     // (RPM)
+            const int32_t vE1 = tx.has(CiA402::TxField::Enc1Vel2111_03) // Encoder 1 velocity (if
+                                                                        // mapped)
                                     ? tx.get<int32_t>(CiA402::TxField::Enc1Vel2111_03)
                                     : 0;
-            const int32_t vE2 = tx.has(CiA402::TxField::Enc2Vel2113_03)
+            const int32_t vE2 = tx.has(CiA402::TxField::Enc2Vel2113_03) // Encoder 2 velocity (if
+                                                                        // mapped)
                                     ? tx.get<int32_t>(CiA402::TxField::Enc2Vel2113_03)
                                     : 0;
 
-            // helpers: convert a source to degrees on ITS OWN shaft
+            // =====================================================================
+            // SOURCE INTERPRETATION HELPERS
+            // =====================================================================
+            // These lambdas convert raw data to degrees on the encoder's own shaft,
+            // taking into account encoder resolution and the mounting location
+
+            // Convert position source to degrees on its own physical shaft
             auto posDegOnOwnShaft = [&](PosSrc s) -> std::pair<double, Mount> {
                 switch (s)
                 {
-                case PosSrc::Enc1:
+                case Impl::PosSrc::Enc1:
+                    // Direct encoder 1 readout: counts -> degrees using enc1 resolution
                     return {double(pE1) * enc1ResInv[j] * 360.0, enc1Mount[j]};
-                case PosSrc::Enc2:
+
+                case Impl::PosSrc::Enc2:
+                    // Direct encoder 2 readout: counts -> degrees using enc2 resolution
                     return {double(pE2) * enc2ResInv[j] * 360.0, enc2Mount[j]};
-                case PosSrc::S6064:
+
+                case Impl::PosSrc::S6064:
                 default: {
-                    // 6064 follows position-loop source → use its mount and CPR
-                    if (posLoopSrc[j] == SensorSrc::Enc1 && enc1ResInv[j] != 0.0)
+                    // CiA402 standard object - interpretation depends on drive's loop source
+                    // The drive tells us which encoder it uses internally via posLoopSrc
+                    if (posLoopSrc[j] == Impl::SensorSrc::Enc1 && enc1ResInv[j] != 0.0)
                         return {double(p6064) * enc1ResInv[j] * 360.0, enc1Mount[j]};
-                    if (posLoopSrc[j] == SensorSrc::Enc2 && enc2ResInv[j] != 0.0)
+                    if (posLoopSrc[j] == Impl::SensorSrc::Enc2 && enc2ResInv[j] != 0.0)
                         return {double(p6064) * enc2ResInv[j] * 360.0, enc2Mount[j]};
-                    // fallback: prefer enc1 if we can interpret counts
-                    if (enc1Mount[j] != Mount::None && enc1ResInv[j] != 0.0)
+
+                    // Fallback: if loop source unknown, prefer enc1 if available
+                    if (enc1Mount[j] != Impl::Mount::None && enc1ResInv[j] != 0.0)
                         return {double(p6064) * enc1ResInv[j] * 360.0, enc1Mount[j]};
-                    if (enc2Mount[j] != Mount::None && enc2ResInv[j] != 0.0)
+                    if (enc2Mount[j] != Impl::Mount::None && enc2ResInv[j] != 0.0)
                         return {double(p6064) * enc2ResInv[j] * 360.0, enc2Mount[j]};
-                    return {0.0, Mount::None};
+                    return {0.0, Impl::Mount::None};
                 }
                 }
             };
+            // Convert velocity source to deg/s on its own physical shaft
             auto velDegSOnOwnShaft = [&](VelSrc s) -> std::pair<double, Mount> {
                 switch (s)
                 {
-                case VelSrc::Enc1:
+                case Impl::VelSrc::Enc1:
+                    // Direct encoder 1 velocity (already in RPM from PDO)
                     return {double(vE1) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
-                case VelSrc::Enc2:
+
+                case Impl::VelSrc::Enc2:
+                    // Direct encoder 2 velocity (already in RPM from PDO)
                     return {double(vE2) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
-                case VelSrc::S606C:
+
+                case Impl::VelSrc::S606C:
                 default: {
-                    // 606C follows velocity-loop source → use its mount and CPR
-                    if (velLoopSrc[j] == SensorSrc::Enc1)
+                    // CiA402 standard velocity - interpretation depends on drive's velocity loop
+                    // source
+                    if (velLoopSrc[j] == Impl::SensorSrc::Enc1)
                         return {double(v606C) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
-                    if (velLoopSrc[j] == SensorSrc::Enc2)
+                    if (velLoopSrc[j] == Impl::SensorSrc::Enc2)
                         return {double(v606C) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
-                    // fallback: prefer enc1 if we can interpret counts
-                    if (enc1Mount[j] != Mount::None)
+
+                    // Fallback: if loop source unknown, prefer enc1 if available
+                    if (enc1Mount[j] != Impl::Mount::None)
                         return {double(v606C) * RPM_TO_DEG_PER_SEC, enc1Mount[j]};
-                    if (enc2Mount[j] != Mount::None)
+                    if (enc2Mount[j] != Impl::Mount::None)
                         return {double(v606C) * RPM_TO_DEG_PER_SEC, enc2Mount[j]};
-                    return {0.0, Mount::None};
+                    return {0.0, Impl::Mount::None};
                 }
                 }
             };
 
-            // ---- POSITION outputs, each with its own source selection ----
+            // =====================================================================
+            // POSITION FEEDBACK PROCESSING
+            // =====================================================================
+            // Apply the configured source selection and coordinate transformations
             {
-                auto [degJ_src, mountJ] = posDegOnOwnShaft(posSrcJoint[j]);
-                auto [degM_src, mountM] = posDegOnOwnShaft(posSrcMotor[j]);
+                // Get raw position data from configured sources (on their own shafts)
+                auto [degJ_src, mountJ] = posDegOnOwnShaft(posSrcJoint[j]); // Joint position source
+                auto [degM_src, mountM] = posDegOnOwnShaft(posSrcMotor[j]); // Motor position source
 
-                // Express each on the requested side (joint/motor)
+                // Transform to the requested coordinate systems
                 const double jointDeg = shaftFromMount_pos(degJ_src, mountJ, j, /*asMotor*/ false);
                 const double motorDeg = shaftFromMount_pos(degM_src, mountM, j, /*asMotor*/ true);
 
+                // Store in output variables
                 this->variables.jointPositions[j] = jointDeg;
                 this->variables.motorEncoders[j] = motorDeg;
             }
 
-            // ---- VELOCITY outputs, each with its own source selection ----
+            // =====================================================================
+            // VELOCITY FEEDBACK PROCESSING
+            // =====================================================================
+            // Same logic as position but for velocities
             {
-                auto [degsJ_src, mountJ] = velDegSOnOwnShaft(velSrcJoint[j]);
-                auto [degsM_src, mountM] = velDegSOnOwnShaft(velSrcMotor[j]);
+                // Get raw velocity data from configured sources (on their own shafts)
+                auto [degsJ_src, mountJ] = velDegSOnOwnShaft(velSrcJoint[j]); // Joint velocity
+                                                                              // source
+                auto [degsM_src, mountM] = velDegSOnOwnShaft(velSrcMotor[j]); // Motor velocity
+                                                                              // source
 
+                // Transform to the requested coordinate systems
                 const double jointDegS
                     = shaftFromMount_vel(degsJ_src, mountJ, j, /*asMotor*/ false);
                 const double motorDegS = shaftFromMount_vel(degsM_src, mountM, j, /*asMotor*/ true);
 
+                // Store in output variables
                 this->variables.jointVelocities[j] = jointDegS;
                 this->variables.motorVelocities[j] = motorDegS;
             }
 
-            // accelerations not provided
+            // =====================================================================
+            // OTHER FEEDBACK PROCESSING
+            // =====================================================================
+
+            // Accelerations not provided by the drives (would require differentiation)
             this->variables.jointAccelerations[j] = 0.0;
             this->variables.motorAccelerations[j] = 0.0;
 
-            // ---- TORQUE: motor→joint (per CiA 402: 0x6077 is motor per-thousand) ----
+            // --------- Torque feedback (motor → joint conversion) ----------
+            // CiA402 torque feedback (0x6077) is always motor-side, per-thousand of rated torque
             const double tq_per_thousand
                 = double(tx.get<int16_t>(CiA402::TxField::Torque6077, 0)) / 1000.0;
             const double motorNm = tq_per_thousand * this->ratedMotorTorqueNm[j];
+            // Convert motor torque to joint torque using gear ratio
             this->variables.jointTorques[j] = motorNm * this->gearRatio[j];
 
-            // STO/SBC and timestamp
+            // --------- Safety signals (if mapped into PDOs) ----------
+            // These provide real-time status of safety functions
             this->variables.STO[j] = tx.has(CiA402::TxField::STO_6621_01)
                                          ? tx.get<uint8_t>(CiA402::TxField::STO_6621_01)
-                                         : 0;
+                                         : 0; // Safe Torque Off status
             this->variables.SBC[j] = tx.has(CiA402::TxField::SBC_6621_02)
                                          ? tx.get<uint8_t>(CiA402::TxField::SBC_6621_02)
-                                         : 0;
+                                         : 0; // Safe Brake Control status
+
+            // --------- Timestamp (if available) ----------
+            // Provides drive-side timing information for synchronization
             this->variables.feedbackTime[j]
                 = tx.has(CiA402::TxField::Timestamp20F0)
                       ? double(tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0))
@@ -751,6 +743,112 @@ struct CiA402MotionControl::Impl
         }
     }
 
+    /**
+     * Decode CiA 402 error code (0x603F:00) into a human‑readable string.
+     * Includes explicit vendor codes seen in the field and broader family fallbacks.
+     */
+    std::string describe603F(uint16_t code)
+    {
+        switch (code)
+        {
+        case 0x0000:
+            return "No fault";
+
+        // === Your explicit mappings ===
+        case 0x2220:
+            return "Continuous over current (device internal)";
+        case 0x2250:
+            return "Short circuit (device internal)";
+        case 0x2350:
+            return "Load level fault (I2t, thermal state)";
+        case 0x2351:
+            return "Load level warning (I2t, thermal state)";
+        case 0x3130:
+            return "Phase failure";
+        case 0x3131:
+            return "Phase failure L1";
+        case 0x3132:
+            return "Phase failure L2";
+        case 0x3133:
+            return "Phase failure L3";
+        case 0x3210:
+            return "DC link over-voltage";
+        case 0x3220:
+            return "DC link under-voltage";
+        case 0x3331:
+            return "Field circuit interrupted";
+        case 0x4210:
+            return "Excess temperature device";
+        case 0x4310:
+            return "Excess temperature drive";
+        case 0x5200:
+            return "Control";
+        case 0x5300:
+            return "Operating unit";
+        case 0x6010:
+            return "Software reset (watchdog)";
+        case 0x6320:
+            return "Parameter error";
+        case 0x7121:
+            return "Motor blocked";
+        case 0x7300:
+            return "Sensor";
+        case 0x7303:
+            return "Resolver 1 fault";
+        case 0x7304:
+            return "Resolver 2 fault";
+        case 0x7500:
+            return "Communication";
+        case 0x8612:
+            return "Positioning controller (reference limit)";
+        case 0xF002:
+            return "Sub-synchronous run";
+
+        default:
+            // === Family fallbacks (upper byte) ===
+            switch (code & 0xFF00)
+            {
+            case 0x2200:
+                return "Current/device-internal fault";
+            case 0x2300:
+                return "Motor/output circuit fault";
+            case 0x3100:
+                return "Phase/mains supply issue";
+            case 0x3200:
+                return "DC link voltage issue";
+            case 0x3300:
+                return "Field/armature circuit issue";
+            case 0x4200:
+                return "Excess temperature (device)";
+            case 0x4300:
+                return "Excess temperature (drive)";
+            case 0x5200:
+                return "Control device hardware / limits";
+            case 0x5300:
+                return "Operating unit / safety";
+            case 0x6000:
+                return "Software reset / watchdog";
+            case 0x6300:
+                return "Parameter/configuration error";
+            case 0x7100:
+                return "Motor blocked / mechanical issue";
+            case 0x7300:
+                return "Sensor/encoder fault";
+            case 0x7500:
+                return "Communication/internal";
+            case 0x8600:
+                return "Positioning controller (vendor specific)";
+            case 0xF000:
+                return "Timing/performance warning";
+            default: {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "Unknown 0x603F error: 0x%04X", code);
+                return std::string(buf);
+            }
+            }
+        }
+    }
+
 }; // struct Impl
 
 //  CiA402MotionControl  —  ctor / dtor
@@ -794,85 +892,161 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     if (cfg.check("expected_slave_name"))
         m_impl->expectedName = cfg.find("expected_slave_name").asString();
 
-    auto parsePos = [&](const std::string& s) -> PosSrc {
-        if (s == "enc1" || s == "ENC1")
-            return PosSrc::Enc1;
-        if (s == "enc2" || s == "ENC2")
-            return PosSrc::Enc2;
-        return PosSrc::S6064; // default/fallback
+    // =========================================================================
+    // ENCODER CONFIGURATION PARSING
+    // =========================================================================
+    // This system supports dual encoders per axis with flexible source selection:
+    // - Enc1: Typically motor-mounted (high resolution, motor shaft feedback)
+    // - Enc2: Typically joint-mounted (load-side feedback after gearbox)
+    // - 6064/606C: Standard CiA402 objects that follow the configured loop sources
+    //
+    // Each feedback type (position/velocity for joint/motor) can independently
+    // choose its source, allowing configurations like:
+    // - Joint position from load encoder, motor position from motor encoder
+    // - Joint velocity from load encoder, motor velocity from 606C
+
+    // Parse helper functions for configuration strings
+    auto parsePos = [&](const std::string& s) -> Impl::PosSrc {
+        if (s == "enc1")
+            return Impl::PosSrc::Enc1; // Use encoder 1 directly
+        if (s == "enc2")
+            return Impl::PosSrc::Enc2; // Use encoder 2 directly
+        return Impl::PosSrc::S6064; // Use CiA402 standard object (follows loop source)
     };
-    auto parseVel = [&](const std::string& s) -> VelSrc {
-        if (s == "enc1" || s == "ENC1")
-            return VelSrc::Enc1;
-        if (s == "enc2" || s == "ENC2")
-            return VelSrc::Enc2;
-        return VelSrc::S606C; // default/fallback
+    auto parseVel = [&](const std::string& s) -> Impl::VelSrc {
+        if (s == "enc1")
+            return Impl::VelSrc::Enc1; // Use encoder 1 velocity directly
+        if (s == "enc2")
+            return Impl::VelSrc::Enc2; // Use encoder 2 velocity directly
+        return Impl::VelSrc::S606C; // Use CiA402 standard object (follows loop source)
     };
-    auto parseMount = [&](const std::string& s) -> Mount {
-        if (s == "motor" || s == "MOTOR")
-            return Mount::Motor;
-        if (s == "joint" || s == "JOINT")
-            return Mount::Joint;
-        if (s == "none" || s == "NONE")
-            return Mount::None;
+    auto parseMount = [&](const std::string& s) -> Impl::Mount {
+        if (s == "motor")
+            return Impl::Mount::Motor; // Encoder measures motor shaft (pre-gearbox)
+        if (s == "joint")
+            return Impl::Mount::Joint; // Encoder measures joint/load shaft (post-gearbox)
+        if (s == "none")
+            return Impl::Mount::None; // Encoder not present/not used
         yWarning("%s: invalid mount '%s' (allowed: none|motor|joint) → 'none'",
                  Impl::kClassName.data(),
                  s.c_str());
-        return Mount::None;
+        return Impl::Mount::None;
     };
 
-    // Global defaults / legacy keys
-    const std::string posDefBoth
-        = cfg.check("position_feedback", yarp::os::Value("6064")).asString();
-    const std::string velDefBoth
-        = cfg.check("velocity_feedback", yarp::os::Value("606C")).asString();
+    auto extractListOfStringFromSearchable = [this](const yarp::os::Searchable& cfg,
+                                                    const char* key,
+                                                    const std::vector<std::string>& acceptedKeys,
+                                                    std::vector<std::string>& result) -> bool {
+        result.clear();
 
-    const std::string posDefJoint
-        = cfg.check("position_feedback_joint", yarp::os::Value(posDefBoth)).asString();
-    const std::string posDefMotor
-        = cfg.check("position_feedback_motor", yarp::os::Value(posDefBoth)).asString();
+        if (!cfg.check(key))
+        {
+            yError("%s: missing key '%s'", Impl::kClassName.data(), key);
+            return false;
+        }
 
-    const std::string velDefJoint
-        = cfg.check("velocity_feedback_joint", yarp::os::Value(velDefBoth)).asString();
-    const std::string velDefMotor
-        = cfg.check("velocity_feedback_motor", yarp::os::Value(velDefBoth)).asString();
+        const yarp::os::Value& v = cfg.find(key);
+        if (!v.isList())
+        {
+            yError("%s: key '%s' is not a list", Impl::kClassName.data(), key);
+            return false;
+        }
 
-    // Mounts (Enc1 defaults to motor; Enc2 defaults to none)
-    const std::string enc1M = cfg.check("enc1_mount", yarp::os::Value("motor")).asString();
-    const std::string enc2M = cfg.check("enc2_mount", yarp::os::Value("none")).asString();
+        const yarp::os::Bottle* lst = v.asList();
+        if (!lst)
+        {
+            yError("%s: internal error: list for key '%s' is null", Impl::kClassName.data(), key);
+            return false;
+        }
 
-    m_impl->posSrcJoint.assign(m_impl->numAxes, parsePos(posDefJoint));
-    m_impl->posSrcMotor.assign(m_impl->numAxes, parsePos(posDefMotor));
-    m_impl->velSrcJoint.assign(m_impl->numAxes, parseVel(velDefJoint));
-    m_impl->velSrcMotor.assign(m_impl->numAxes, parseVel(velDefMotor));
+        const size_t expected = static_cast<size_t>(m_impl->numAxes);
+        const size_t actual = static_cast<size_t>(lst->size());
+        if (actual != expected)
+        {
+            yError("%s: list for key '%s' has incorrect size (%zu), expected (%zu)",
+                   Impl::kClassName.data(),
+                   key,
+                   actual,
+                   expected);
+            return false;
+        }
 
-    m_impl->enc1Mount.assign(m_impl->numAxes, parseMount(enc1M));
-    m_impl->enc2Mount.assign(m_impl->numAxes, parseMount(enc2M));
+        result.reserve(expected);
+        for (int i = 0; i < lst->size(); ++i)
+        {
+            const yarp::os::Value& elem = lst->get(i);
 
+            if (!elem.isString())
+            {
+                yError("%s: element %d in list for key '%s' is not a string",
+                       Impl::kClassName.data(),
+                       i,
+                       key);
+                result.clear();
+                return false;
+            }
 
-    yInfo("%s: position feedback (joint) = %s",
-          Impl::kClassName.data(),
-          (posDefJoint == "6064") ? "6064 (loop source)" : posDefJoint.c_str());
+            const std::string val = elem.asString();
+            if (std::find(acceptedKeys.begin(), acceptedKeys.end(), val) == acceptedKeys.end())
+            {
+                yError("%s: invalid value '%s' in list for key '%s'",
+                       Impl::kClassName.data(),
+                       val.c_str(),
+                       key);
+                result.clear();
+                return false;
+            }
 
-    // Per-axis overrides: position_feedback_joint_0, ... etc.
+            result.push_back(val);
+        }
+
+        return true;
+    };
+
+    // Encoder mounting configuration (where each encoder is physically located)
+    // enc1_mount must be list of "motor" or "joint"
+    // enc2_mount must be list of "motor", "joint" or "none"
+    std::vector<std::string> enc1MStr; // encoder 1 mount per axis
+    std::vector<std::string> enc2MStr; // encoder 2 mount per axis
+
+    if (!extractListOfStringFromSearchable(cfg, "enc1_mount", {"motor", "joint"}, enc1MStr))
+        return false;
+    if (!extractListOfStringFromSearchable(cfg, "enc2_mount", {"motor", "joint", "none"}, enc2MStr))
+        return false;
+
+    std::vector<std::string> posSrcJointStr;
+    std::vector<std::string> posSrcMotorStr;
+    std::vector<std::string> velSrcJointStr;
+    std::vector<std::string> velSrcMotorStr;
+    if (!extractListOfStringFromSearchable(cfg,
+                                           "position_feedback_joint",
+                                           {"6064", "enc1", "enc2"},
+                                           posSrcJointStr))
+        return false;
+    if (!extractListOfStringFromSearchable(cfg,
+                                           "position_feedback_motor",
+                                           {"6064", "enc1", "enc2"},
+                                           posSrcMotorStr))
+        return false;
+    if (!extractListOfStringFromSearchable(cfg,
+                                           "velocity_feedback_joint",
+                                           {"606C", "enc1", "enc2"},
+                                           velSrcJointStr))
+        return false;
+    if (!extractListOfStringFromSearchable(cfg,
+                                           "velocity_feedback_motor",
+                                           {"606C", "enc1", "enc2"},
+                                           velSrcMotorStr))
+        return false;
+
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        auto key = [&](const char* base) { return std::string(base) + "_" + std::to_string(j); };
-
-        if (cfg.check(key("position_feedback_joint")))
-            m_impl->posSrcJoint[j] = parsePos(cfg.find(key("position_feedback_joint")).asString());
-        if (cfg.check(key("position_feedback_motor")))
-            m_impl->posSrcMotor[j] = parsePos(cfg.find(key("position_feedback_motor")).asString());
-
-        if (cfg.check(key("velocity_feedback_joint")))
-            m_impl->velSrcJoint[j] = parseVel(cfg.find(key("velocity_feedback_joint")).asString());
-        if (cfg.check(key("velocity_feedback_motor")))
-            m_impl->velSrcMotor[j] = parseVel(cfg.find(key("velocity_feedback_motor")).asString());
-
-        if (cfg.check(key("enc1_mount")))
-            m_impl->enc1Mount[j] = parseMount(cfg.find(key("enc1_mount")).asString());
-        if (cfg.check(key("enc2_mount")))
-            m_impl->enc2Mount[j] = parseMount(cfg.find(key("enc2_mount")).asString());
+        m_impl->enc1Mount.push_back(parseMount(enc1MStr[j]));
+        m_impl->enc2Mount.push_back(parseMount(enc2MStr[j]));
+        m_impl->posSrcJoint.push_back(parsePos(posSrcJointStr[j]));
+        m_impl->posSrcMotor.push_back(parsePos(posSrcMotorStr[j]));
+        m_impl->velSrcJoint.push_back(parseVel(velSrcJointStr[j]));
+        m_impl->velSrcMotor.push_back(parseVel(velSrcMotorStr[j]));
     }
 
     const std::string ifname = cfg.find("ifname").asString();
@@ -894,33 +1068,42 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
           ec_slavecount,
           m_impl->ethercatManager.getWorkingCounter());
 
+    // =========================================================================
+    // DRIVE LOOP SOURCE CONFIGURATION READING
+    // =========================================================================
+    // Read which encoders the drive uses internally for position/velocity loops
+    // This affects how 6064/606C values should be interpreted
+
     // Loop-source readers (local lambdas)
-    auto readPosLoopSrc = [&](size_t j) -> SensorSrc {
+    auto readPosLoopSrc = [&](size_t j) -> Impl::SensorSrc {
         const int s = m_impl->firstSlave + int(j);
         uint8_t src = 0;
         auto e = m_impl->ethercatManager.readSDO<uint8_t>(s, 0x2012, 0x09, src);
         if (e != ::CiA402::EthercatManager::Error::NoError)
         {
-            yError("%s: failed to read position loop source (joint %zu)", Impl::kClassName.data(), j);
-            return SensorSrc::Unknown;
+            yError("%s: failed to read position loop source (joint %zu)",
+                   Impl::kClassName.data(),
+                   j);
+            return Impl::SensorSrc::Unknown;
         }
-        yInfo("%s: axis %zu: position loop source = %d (%s)",
-              Impl::kClassName.data(),
-              j,
-              int(src),
-              (src == 1) ? "Enc1" : (src == 2) ? "Enc2" : "Unknown");
-        return (src == 1) ? SensorSrc::Enc1 : (src == 2) ? SensorSrc::Enc2 : SensorSrc::Unknown;
+        return (src == 1)   ? Impl::SensorSrc::Enc1
+               : (src == 2) ? Impl::SensorSrc::Enc2
+                            : Impl::SensorSrc::Unknown;
     };
-    auto readVelLoopSrc = [&](size_t j) -> SensorSrc {
+    auto readVelLoopSrc = [&](size_t j) -> Impl::SensorSrc {
         const int s = m_impl->firstSlave + int(j);
         uint8_t src = 0;
         auto e = m_impl->ethercatManager.readSDO<uint8_t>(s, 0x2011, 0x05, src);
         if (e != ::CiA402::EthercatManager::Error::NoError)
-            return SensorSrc::Unknown;
-        return (src == 1) ? SensorSrc::Enc1 : (src == 2) ? SensorSrc::Enc2 : SensorSrc::Unknown;
+            return Impl::SensorSrc::Unknown;
+        return (src == 1)   ? Impl::SensorSrc::Enc1
+               : (src == 2) ? Impl::SensorSrc::Enc2
+                            : Impl::SensorSrc::Unknown;
     };
 
-    // Availability helpers (from mapping)
+    // --------- PDO Mapping Availability Checks ----------
+    // These check if encoder data was successfully mapped into the PDOs
+    // during the EtherCAT initialization phase
     auto hasEnc1Pos = [&](size_t j) {
         const int s = m_impl->firstSlave + int(j);
         return m_impl->ethercatManager.getTxView(s).has(CiA402::TxField::Enc1Pos2111_02);
@@ -944,16 +1127,21 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
           m_impl->firstSlave,
           m_impl->firstSlave + int(m_impl->numAxes) - 1);
 
-    // Resize + fill loop-source vectors
-    m_impl->posLoopSrc.resize(m_impl->numAxes, SensorSrc::Unknown);
-    m_impl->velLoopSrc.resize(m_impl->numAxes, SensorSrc::Unknown);
+    // --------- Read drive-internal loop sources ----------
+    // These determine how CiA402 standard objects (6064/606C) should be interpreted
+    m_impl->posLoopSrc.resize(m_impl->numAxes, Impl::SensorSrc::Unknown);
+    m_impl->velLoopSrc.resize(m_impl->numAxes, Impl::SensorSrc::Unknown);
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
         m_impl->posLoopSrc[j] = readPosLoopSrc(j);
         m_impl->velLoopSrc[j] = readVelLoopSrc(j);
     }
 
-    // STRICT VALIDATION: requested encoders must be mapped AND mounted
+    // =========================================================================
+    // CONFIGURATION VALIDATION
+    // =========================================================================
+    // Strict validation: requested encoders must be both mapped in PDOs AND
+    // have valid mount points. This prevents runtime errors from misconfiguration.
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
         auto bad = [&](const char* what) {
@@ -961,57 +1149,55 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
             return true;
         };
 
-        // position JOINT
-        if (m_impl->posSrcJoint[j] == PosSrc::Enc1
-            && (m_impl->enc1Mount[j] == Mount::None || !hasEnc1Pos(j)))
+        // --------- Position feedback validation ----------
+        if (m_impl->posSrcJoint[j] == Impl::PosSrc::Enc1
+            && (m_impl->enc1Mount[j] == Impl::Mount::None || !hasEnc1Pos(j)))
         {
             if (bad("pos_joint=enc1 but enc1 not mounted/mapped"))
                 return false;
         }
-        if (m_impl->posSrcJoint[j] == PosSrc::Enc2
-            && (m_impl->enc2Mount[j] == Mount::None || !hasEnc2Pos(j)))
+        if (m_impl->posSrcJoint[j] == Impl::PosSrc::Enc2
+            && (m_impl->enc2Mount[j] == Impl::Mount::None || !hasEnc2Pos(j)))
         {
             if (bad("pos_joint=enc2 but enc2 not mounted/mapped"))
                 return false;
         }
 
-        // position MOTOR
-        if (m_impl->posSrcMotor[j] == PosSrc::Enc1
-            && (m_impl->enc1Mount[j] == Mount::None || !hasEnc1Pos(j)))
+        if (m_impl->posSrcMotor[j] == Impl::PosSrc::Enc1
+            && (m_impl->enc1Mount[j] == Impl::Mount::None || !hasEnc1Pos(j)))
         {
             if (bad("pos_motor=enc1 but enc1 not mounted/mapped"))
                 return false;
         }
-        if (m_impl->posSrcMotor[j] == PosSrc::Enc2
-            && (m_impl->enc2Mount[j] == Mount::None || !hasEnc2Pos(j)))
+        if (m_impl->posSrcMotor[j] == Impl::PosSrc::Enc2
+            && (m_impl->enc2Mount[j] == Impl::Mount::None || !hasEnc2Pos(j)))
         {
             if (bad("pos_motor=enc2 but enc2 not mounted/mapped"))
                 return false;
         }
 
-        // velocity JOINT
-        if (m_impl->velSrcJoint[j] == VelSrc::Enc1
-            && (m_impl->enc1Mount[j] == Mount::None || !hasEnc1Vel(j)))
+        // --------- Velocity feedback validation ----------
+        if (m_impl->velSrcJoint[j] == Impl::VelSrc::Enc1
+            && (m_impl->enc1Mount[j] == Impl::Mount::None || !hasEnc1Vel(j)))
         {
             if (bad("vel_joint=enc1 but enc1 not mounted/mapped"))
                 return false;
         }
-        if (m_impl->velSrcJoint[j] == VelSrc::Enc2
-            && (m_impl->enc2Mount[j] == Mount::None || !hasEnc2Vel(j)))
+        if (m_impl->velSrcJoint[j] == Impl::VelSrc::Enc2
+            && (m_impl->enc2Mount[j] == Impl::Mount::None || !hasEnc2Vel(j)))
         {
             if (bad("vel_joint=enc2 but enc2 not mounted/mapped"))
                 return false;
         }
 
-        // velocity MOTOR
-        if (m_impl->velSrcMotor[j] == VelSrc::Enc1
-            && (m_impl->enc1Mount[j] == Mount::None || !hasEnc1Vel(j)))
+        if (m_impl->velSrcMotor[j] == Impl::VelSrc::Enc1
+            && (m_impl->enc1Mount[j] == Impl::Mount::None || !hasEnc1Vel(j)))
         {
             if (bad("vel_motor=enc1 but enc1 not mounted/mapped"))
                 return false;
         }
-        if (m_impl->velSrcMotor[j] == VelSrc::Enc2
-            && (m_impl->enc2Mount[j] == Mount::None || !hasEnc2Vel(j)))
+        if (m_impl->velSrcMotor[j] == Impl::VelSrc::Enc2
+            && (m_impl->enc2Mount[j] == Impl::Mount::None || !hasEnc2Vel(j)))
         {
             if (bad("vel_motor=enc2 but enc2 not mounted/mapped"))
                 return false;
@@ -1103,6 +1289,14 @@ bool CiA402MotionControl::close()
 }
 
 //  run()  —  gets called every period (real-time control loop)
+/**
+ * Control loop phases:
+ *  1) Apply user‑requested control modes (CiA‑402 power state machine)
+ *  2) Push user setpoints to PDOs (units and shaft conversions handled)
+ *  3) Cyclic exchange over EtherCAT (outputs sent / inputs read)
+ *  4) Read back feedback (encoders, torque, safety, timestamp)
+ *  5) Diagnostics and bookkeeping (active mode tracking, latching, inhibit)
+ */
 void CiA402MotionControl::run()
 {
     /* ------------------------------------------------------------------
@@ -1296,9 +1490,9 @@ bool CiA402MotionControl::getMotorEncoderCountsPerRevolution(int m, double* cpr)
         std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
 
         // check which encoder is mounted on the motor side
-        if (m_impl->enc1Mount[m] == Mount::Motor)
+        if (m_impl->enc1Mount[m] == Impl::Mount::Motor)
             *cpr = static_cast<double>(m_impl->enc1Res[m]);
-        else if (m_impl->enc2Mount[m] == Mount::Motor)
+        else if (m_impl->enc2Mount[m] == Impl::Mount::Motor)
             *cpr = static_cast<double>(m_impl->enc2Res[m]);
         else
             return false; // no encoder on motor side
@@ -1885,7 +2079,8 @@ bool CiA402MotionControl::setRefTorques(const double* t)
         {
             if (m_impl->controlModeState.active[j] != VOCAB_CM_TORQUE)
             {
-                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint %zu",
+                yError("%s: setRefTorques rejected: TORQUE mode is not active for the joint "
+                       "%zu",
                        Impl::kClassName.data(),
                        j);
                 return false; // reject
@@ -2020,7 +2215,8 @@ bool CiA402MotionControl::velocityMove(const double* spds)
         {
             if (m_impl->controlModeState.active[j] != VOCAB_CM_VELOCITY)
             {
-                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %zu",
+                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint "
+                       "%zu",
                        Impl::kClassName.data(),
                        j);
                 return false; // reject
@@ -2132,9 +2328,9 @@ bool CiA402MotionControl::getRefAccelerations(double* accs)
         yError("%s: null pointer", Impl::kClassName.data());
         return false;
     }
-    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // CiA-402 does not support acceleration
-                                                            // setpoints, so we return 0.0 for all
-                                                            // axes
+    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // CiA-402 does not support
+                                                            // acceleration setpoints, so we
+                                                            // return 0.0 for all axes
     return true;
 }
 
@@ -2191,7 +2387,8 @@ bool CiA402MotionControl::velocityMove(const int n_joint, const int* joints, con
             }
             if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_VELOCITY)
             {
-                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint %d",
+                yError("%s: velocityMove rejected: VELOCITY mode is not active for the joint "
+                       "%d",
                        Impl::kClassName.data(),
                        joints[k]);
                 return false; // reject
@@ -2291,7 +2488,7 @@ bool CiA402MotionControl::getLastJointFault(int j, int& fault, std::string& mess
     }
 
     fault = static_cast<int>(code);
-    message = describe603F(code);
+    message = m_impl->describe603F(code);
 
     // --- 0x203F:01 Error report (STRING(8)) ---
     // Use a fixed char[8] so we can call the templated readSDO<T> unmodified.
