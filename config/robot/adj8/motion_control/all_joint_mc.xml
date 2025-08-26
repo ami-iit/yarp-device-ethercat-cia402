@@ -5,4 +5,6 @@ BSD-3-Clause license. -->
 <device xmlns:xi="http://www.w3.org/2001/XInclude" name="all_joints_mc" type="CiA402MotionControl">
     <param name="ifname">"eth0"</param>
     <param name="num_axes">1</param>
+    <param name="enc1_mount">( "motor" )</param>
+    <param name="enc2_mount">( "joint" )</param>
 </device>
