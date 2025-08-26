@@ -46,79 +46,118 @@ static inline int wr32(int s, uint16_t idx, uint8_t sub, uint32_t v)
 
 EthercatManager::Error EthercatManager::configurePDOMapping(int s)
 {
-    // probe for optional fields
-    auto probe32 = [&](uint16_t idx, uint8_t sub) -> bool {
-        int32_t tmp = 0;
-        int size = sizeof(tmp);
-        int rc = ec_SDOread(s, idx, sub, FALSE, &size, &tmp, EC_TIMEOUTRXM);
-        return rc > 0;
+    auto wr8 = [s](uint16_t idx, uint8_t sub, uint8_t v) {
+        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
     };
-    const bool hasEnc1Pos = probe32(0x2111, 0x02);
-    const bool hasEnc1Vel = probe32(0x2111, 0x03);
-    const bool hasEnc2Pos = probe32(0x2113, 0x02);
-    const bool hasEnc2Vel = probe32(0x2113, 0x03);
-    const bool hasTime = probe32(0x20F0, 0x00);
-    const bool hasSafe = probe32(0x6621, 0x01) && probe32(0x6621, 0x02);
+    auto wr16 = [s](uint16_t idx, uint8_t sub, uint16_t v) {
+        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    };
+    auto wr32 = [s](uint16_t idx, uint8_t sub, uint32_t v) {
+        return ec_SDOwrite(s, idx, sub, FALSE, sizeof(v), &v, EC_TIMEOUTRXM);
+    };
 
-    // clear existing assignments
-    wr8(s, 0x1C12, 0x00, 0);
-    wr8(s, 0x1C13, 0x00, 0);
-    wr8(s, 0x1600, 0x00, 0);
-    wr8(s, 0x1A00, 0x00, 0);
+    // --------- clear existing assignments ----------
+    wr8(0x1C12, 0x00, 0);
+    wr8(0x1C13, 0x00, 0);
+    for (uint16_t p = 0x1600; p <= 0x160F; ++p)
+        wr8(p, 0x00, 0);
+    for (uint16_t p = 0x1A00; p <= 0x1A0F; ++p)
+        wr8(p, 0x00, 0);
 
-    // RxPDO 0x1600 (fixed)
-    uint8_t n = 0;
-    wr32(s, 0x1600, ++n, mapEntry(0x6040, 0x00, 16));
-    wr32(s, 0x1600, ++n, mapEntry(0x6060, 0x00, 8));
-    wr32(s, 0x1600, ++n, mapEntry(0x6071, 0x00, 16));
-    wr32(s, 0x1600, ++n, mapEntry(0x607A, 0x00, 32));
-    wr32(s, 0x1600, ++n, mapEntry(0x60FF, 0x00, 32));
-    wr8(s, 0x1600, 0x00, n);
+    // --------- RxPDO 0x1600 (fixed) ----------
+    uint8_t rx_n = 0;
+    wr32(0x1600, ++rx_n, mapEntry(0x6040, 0x00, 16));
+    wr32(0x1600, ++rx_n, mapEntry(0x6060, 0x00, 8));
+    wr32(0x1600, ++rx_n, mapEntry(0x6071, 0x00, 16));
+    wr32(0x1600, ++rx_n, mapEntry(0x607A, 0x00, 32));
+    wr32(0x1600, ++rx_n, mapEntry(0x60FF, 0x00, 32));
+    wr8(0x1600, 0x00, rx_n);
 
-    // TxPDO 0x1A00 (dynamic)
-    uint8_t m = 0;
-    uint32_t byteOff = 0;
-    auto add = [&](TxField id, uint16_t idx, uint8_t sub, uint8_t bits) {
-        wr32(s, 0x1A00, ++m, mapEntry(idx, sub, bits));
+    // --------- TxPDO builder with rollover ----------
+    constexpr int MAX_ENTRIES_PER_PDO = 8; // conservative, many drives limit to 8
+    uint32_t byteOff = 0; // cumulative offset into input image
+    m_txMap[s - 1].clear();
+
+    uint16_t curTxIdx = 0x1A00;
+    uint8_t curCount = 0;
+    std::vector<uint16_t> txUsed;
+    txUsed.reserve(4);
+
+    auto beginTx = [&]() {
+        curCount = 0;
+        if (wr8(curTxIdx, 0x00, 0) <= 0)
+            return false;
+        txUsed.push_back(curTxIdx);
+        return true;
+    };
+    auto finalizeTx = [&]() { return wr8(curTxIdx, 0x00, curCount) > 0; };
+    auto nextTx = [&]() {
+        if (!finalizeTx())
+            return false;
+        ++curTxIdx; // 0x1A01, 0x1A02, ...
+        return beginTx();
+    };
+    auto ensureCap = [&]() {
+        if (curCount >= MAX_ENTRIES_PER_PDO)
+            return nextTx();
+        return true;
+    };
+    auto try_map = [&](TxField id, uint16_t idx, uint8_t sub, uint8_t bits) {
+        if (!ensureCap())
+            return false;
+        if (wr32(curTxIdx, ++curCount, mapEntry(idx, sub, bits)) <= 0)
+        {
+            // mapping rejected by slave → rollback this subindex number
+            --curCount;
+            return false;
+        }
         m_txMap[s - 1][id] = FieldInfo{id, byteOff, bits};
         byteOff += bits / 8;
+        return true;
     };
 
-    m_txMap[s - 1].clear();
-    add(TxField::Statusword, 0x6041, 0x00, 16);
-    add(TxField::OpModeDisplay, 0x6061, 0x00, 8);
-    add(TxField::Position6064, 0x6064, 0x00, 32);
-    add(TxField::Velocity606C, 0x606C, 0x00, 32);
-    add(TxField::Torque6077, 0x6077, 0x00, 16);
-    add(TxField::PositionError6065, 0x6065, 0x00, 32);
+    // Start first TxPDO
+    if (!beginTx())
+        return Error::ConfigFailed;
 
-    if (hasTime)
-    {
-        add(TxField::Timestamp20F0, 0x20F0, 0x00, 32);
-    }
-    if (hasSafe)
-    {
-        add(TxField::STO_6621_01, 0x6621, 0x01, 8);
-        add(TxField::SBC_6621_02, 0x6621, 0x02, 8);
-    }
-    if (hasEnc1Pos)
-        add(TxField::Enc1Pos2111_02, 0x2111, 0x02, 32);
-    if (hasEnc1Vel)
-        add(TxField::Enc1Vel2111_03, 0x2111, 0x03, 32);
-    if (hasEnc2Pos)
-        add(TxField::Enc2Pos2113_02, 0x2113, 0x02, 32);
-    if (hasEnc2Vel)
-        add(TxField::Enc2Vel2113_03, 0x2113, 0x03, 32);
+    // --------- Mandatory CiA-402 fields (keep in front) ----------
+    try_map(TxField::Statusword, 0x6041, 0x00, 16);
+    try_map(TxField::OpModeDisplay, 0x6061, 0x00, 8);
+    try_map(TxField::Position6064, 0x6064, 0x00, 32);
+    try_map(TxField::Velocity606C, 0x606C, 0x00, 32);
+    try_map(TxField::Torque6077, 0x6077, 0x00, 16);
+    try_map(TxField::PositionError6065, 0x6065, 0x00, 32);
 
-    wr8(s, 0x1A00, 0x00, m);
+    // --------- Optional/vendor fields (spill to 0x1A01, 0x1A02 … as needed) ----------
+    // (No pre-probing — we "map-by-trying". If a mapping fails, we just skip it.)
+    try_map(TxField::Timestamp20F0, 0x20F0, 0x00, 32);
+    try_map(TxField::STO_6621_01, 0x6621, 0x01, 8);
+    try_map(TxField::SBC_6621_02, 0x6621, 0x02, 8);
+    try_map(TxField::Enc1Pos2111_02, 0x2111, 0x02, 32);
+    try_map(TxField::Enc1Vel2111_03, 0x2111, 0x03, 32);
+    try_map(TxField::Enc2Pos2113_02, 0x2113, 0x02, 32);
+    try_map(TxField::Enc2Vel2113_03, 0x2113, 0x03, 32);
 
-    // Assign to SM
-    wr16(s, 0x1C12, 1, 0x1600);
-    wr16(s, 0x1C13, 1, 0x1A00);
-    wr8(s, 0x1C12, 0x00, 1);
-    wr8(s, 0x1C13, 0x00, 1);
+    if (!finalizeTx())
+        return Error::ConfigFailed;
 
-    yInfo("configured PDOs for slave %d: %d bytes Rx, %d bytes Tx", s, 13, byteOff);
+    // --------- Assign PDOs to SyncManagers ----------
+    // Rx: SM2 (0x1C12)
+    wr16(0x1C12, 1, 0x1600);
+    wr8(0x1C12, 0x00, 1);
+
+    // Tx: SM3 (0x1C13) — write all we used
+    wr8(0x1C13, 0x00, 0);
+    for (size_t k = 0; k < txUsed.size(); ++k)
+        wr16(0x1C13, static_cast<uint8_t>(k + 1), txUsed[k]);
+    wr8(0x1C13, 0x00, static_cast<uint8_t>(txUsed.size()));
+
+    yInfo("Slave %d '%s': configured %d RxPDOs, %d TxPDOs (%d bytes input)",
+          s,
+          ec_slave[s].name,
+          1,
+          static_cast<int>(txUsed.size()),
+          static_cast<int>(byteOff));
 
     return Error::NoError;
 }
@@ -145,6 +184,24 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         return Error::NoSlavesFound;
     }
     yInfo("found %d slaves", ec_slavecount);
+
+    // Make sure slaves are in PRE-OP and support CoE/SDO before SDO traffic
+    for (int s = 1; s <= ec_slavecount; ++s)
+    {
+        ec_statecheck(s, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
+        if (!(ec_slave[s].mbx_proto & ECT_MBXPROT_COE))
+        {
+            yError("Slave %d '%s' has no CoE mailbox → cannot use SDO", s, ec_slave[s].name);
+            ec_close();
+            return Error::ConfigFailed;
+        }
+        if (!(ec_slave[s].CoEdetails & ECT_COEDET_SDO))
+        {
+            yError("Slave %d '%s' has no SDO support", s, ec_slave[s].name);
+            ec_close();
+            return Error::ConfigFailed;
+        }
+    }
 
     m_rxPtr.assign(ec_slavecount, nullptr);
     m_txRaw.assign(ec_slavecount, nullptr);

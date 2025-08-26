@@ -789,6 +789,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
+    m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
+    m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
+    if (cfg.check("expected_slave_name"))
+        m_impl->expectedName = cfg.find("expected_slave_name").asString();
+
     auto parsePos = [&](const std::string& s) -> PosSrc {
         if (s == "enc1" || s == "ENC1")
             return PosSrc::Enc1;
@@ -870,11 +875,6 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
             m_impl->enc2Mount[j] = parseMount(cfg.find(key("enc2_mount")).asString());
     }
 
-    m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
-    m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
-    if (cfg.check("expected_slave_name"))
-        m_impl->expectedName = cfg.find("expected_slave_name").asString();
-
     const std::string ifname = cfg.find("ifname").asString();
     yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
 
@@ -900,7 +900,15 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         uint8_t src = 0;
         auto e = m_impl->ethercatManager.readSDO<uint8_t>(s, 0x2012, 0x09, src);
         if (e != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: failed to read position loop source (joint %zu)", Impl::kClassName.data(), j);
             return SensorSrc::Unknown;
+        }
+        yInfo("%s: axis %zu: position loop source = %d (%s)",
+              Impl::kClassName.data(),
+              j,
+              int(src),
+              (src == 1) ? "Enc1" : (src == 2) ? "Enc2" : "Unknown");
         return (src == 1) ? SensorSrc::Enc1 : (src == 2) ? SensorSrc::Enc2 : SensorSrc::Unknown;
     };
     auto readVelLoopSrc = [&](size_t j) -> SensorSrc {
@@ -952,6 +960,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
             yError("%s: axis %zu: invalid config: %s", Impl::kClassName.data(), j, what);
             return true;
         };
+
         // position JOINT
         if (m_impl->posSrcJoint[j] == PosSrc::Enc1
             && (m_impl->enc1Mount[j] == Mount::None || !hasEnc1Pos(j)))
