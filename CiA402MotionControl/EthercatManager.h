@@ -276,17 +276,23 @@ template <typename T>
 EthercatManager::Error
 EthercatManager::readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) noexcept
 {
+    // Validate preconditions before attempting EtherCAT operation
     if (!m_initialized.load())
         return Error::NotInitialized;
     if (!indexValid(slaveIndex))
         return Error::InvalidSlaveIndex;
 
-    int size = sizeof(T);
-    int rc = 0;
+    int size = sizeof(T); // Expected data size for type T
+    int rc = 0; // SOEM return code (>0 = success, <=0 = error)
+
+    // SDO operations must be serialized to avoid SOEM conflicts
     {
-        std::lock_guard<std::mutex> lk(m_ioMtx);
+        std::lock_guard<std::mutex> lock(m_ioMtx);
+        // ec_SDOread: slaveIndex, index, subindex, complete_access, size_ptr, data_ptr, timeout
         rc = ec_SDOread(slaveIndex, idx, subIdx, false, &size, &out, EC_TIMEOUTRXM);
     }
+
+    // Convert SOEM result to our error enum
     return (rc > 0) ? Error::NoError : Error::PdoExchangeFailed;
 }
 
