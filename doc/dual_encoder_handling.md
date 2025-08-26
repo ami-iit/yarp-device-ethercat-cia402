@@ -158,8 +158,8 @@ flowchart LR
     C1 --> T3[deg on joint/motor]
   end
   subgraph Out[Outputs]
-    T1 --> JP[jointPositions[j]]
-    T2 --> MP[motorEncoders[j]]
+    T1 --> JP[jointPositions]
+    T2 --> MP[motorEncoders]
   end
 ```
 
