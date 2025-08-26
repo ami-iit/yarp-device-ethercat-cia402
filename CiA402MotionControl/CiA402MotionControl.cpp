@@ -314,11 +314,11 @@ struct CiA402MotionControl::Impl
 
             if (e == ::CiA402::EthercatManager::Error::NoError)
                 yDebug("Joint %s: axis %zu: 0x60A9=0x%08X → unit %s (1 unit = %.6f deg/s)",
-                      kClassName.data(),
-                      j,
-                      raw,
-                      name,
-                      toDegS);
+                       kClassName.data(),
+                       j,
+                       raw,
+                       name,
+                       toDegS);
             else
                 yWarning("Joint %s: axis %zu: failed to read 0x60A9, assuming 1 RPM (1 unit = 6 "
                          "deg/s)",
@@ -502,9 +502,9 @@ struct CiA402MotionControl::Impl
                         break;
                     }
 
-                    // Convert deg/s → rpm on the selected shaft for 0x60FF
-                    const double rpm = shaft_deg_s * this->degSToVel[j];
-                    rx->TargetVelocity = static_cast<int32_t>(std::llround(rpm));
+                    // Convert deg/s → native velocity on the selected shaft for 0x60FF
+                    const double vel = shaft_deg_s * this->degSToVel[j];
+                    rx->TargetVelocity = static_cast<int32_t>(std::llround(vel));
                 }
             }
         }
@@ -544,9 +544,13 @@ struct CiA402MotionControl::Impl
         // Velocity transformation: same logic as position but for velocities
         auto shaftFromMount_vel = [&](double degs, Mount m, size_t j, bool asMotor) -> double {
             if (m == Impl::Mount::Motor)
+            {
                 return asMotor ? degs : degs * gearRatioInv[j];
+            }
             if (m == Impl::Mount::Joint)
+            {
                 return asMotor ? degs * gearRatio[j] : degs;
+            }
             return 0.0;
         };
 
