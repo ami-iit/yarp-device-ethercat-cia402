@@ -274,7 +274,6 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         if (!(m_ctx.slavelist[s].CoEdetails & ECT_COEDET_SDO))
         {
             yError("Slave %d '%s' has no SDO support", s, m_ctx.slavelist[s].name);
-            ecx_close(&m_ctx);
             return Error::ConfigFailed;
         }
     }
@@ -304,7 +303,6 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // This "IO map" is used for efficient cyclic data exchange
     if (ecx_config_map_group(&m_ctx, m_ioMap, 0) <= 0)
     {
-        ecx_close(&m_ctx);
         return Error::ConfigFailed;
     }
 
@@ -330,7 +328,6 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     {
         yError("Ring failed to reach SAFE-OP (AL-status 0x%04x)",
                m_ctx.slavelist[ALL].ALstatuscode);
-        ecx_close(&m_ctx);
         return Error::SlavesNotOp;
     }
 
