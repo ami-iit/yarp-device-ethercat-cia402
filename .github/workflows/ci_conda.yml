@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build_type: [Release]
+        build_type: [Release, Debug]
         os: [ubuntu-latest]
       fail-fast: false
 
@@ -45,8 +45,8 @@ jobs:
         conda list
         env
 
-    - name: "⚙️ Configure [Linux & macOS]"
-      if: contains(matrix.os, 'macos') || contains(matrix.os, 'ubuntu')
+    - name: "⚙️ Configure [Linux]"
+      if: contains(matrix.os, 'ubuntu')
       shell: bash -l {0}
       run: |
         mkdir -p build
@@ -54,8 +54,8 @@ jobs:
         cmake -GNinja -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
               -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ..
 
-    - name: "🏗️ Build [Linux & macOS]"
-      if: contains(matrix.os, 'macos') || contains(matrix.os, 'ubuntu')
+    - name: "🏗️ Build [Linux]"
+      if: contains(matrix.os, 'ubuntu')
       shell: bash -l {0}
       run: |
         cd build
