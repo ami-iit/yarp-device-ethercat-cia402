@@ -286,6 +286,8 @@ private:
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
 
     mutable std::mutex m_ioMtx; ///< Protects IO/SDO accesses.
+
+    static constexpr std::string_view m_kClassName = "EthercatManager"; // Class name for logging
 };
 
 template <typename T>

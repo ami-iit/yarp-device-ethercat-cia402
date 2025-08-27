@@ -235,7 +235,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
     // --------- Initialize SOEM EtherCAT stack ----------
     // SOEM (Simple Open EtherCAT Master) is the underlying EtherCAT library
-    yInfo("EtherCAT: init on %s", ifname.c_str());
+    yInfo("%s: EtherCAT: init on %s", m_kClassName.data(), ifname.c_str());
     if (ecx_init(&m_ctx, ifname.c_str()) <= 0)
     {
         return Error::InitFailed;
@@ -252,7 +252,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         m_portOpen = false;
         return Error::NoSlavesFound;
     }
-    yInfo("found %d slaves", (m_ctx.slavecount ? m_ctx.slavecount : 0));
+    yInfo("%s: found %d slaves", m_kClassName.data(), (m_ctx.slavecount ? m_ctx.slavecount : 0));
 
     // --------- Validate slave capabilities ----------
     // Before we can configure PDOs via SDO, we need to ensure each slave:
@@ -266,14 +266,20 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
         if (!(m_ctx.slavelist[s].mbx_proto & ECT_MBXPROT_COE))
         {
-            yError("Slave %d '%s' has no CoE mailbox → cannot use SDO", s, m_ctx.slavelist[s].name);
+            yError("%s: Slave %d '%s' has no CoE mailbox → cannot use SDO",
+                   m_kClassName.data(),
+                   s,
+                   m_ctx.slavelist[s].name);
             return Error::ConfigFailed;
         }
 
         // Check if slave supports SDO within CoE
         if (!(m_ctx.slavelist[s].CoEdetails & ECT_COEDET_SDO))
         {
-            yError("Slave %d '%s' has no SDO support", s, m_ctx.slavelist[s].name);
+            yError("%s: Slave %d '%s' has no SDO support",
+                   m_kClassName.data(),
+                   s,
+                   m_ctx.slavelist[s].name);
             return Error::ConfigFailed;
         }
     }
@@ -289,11 +295,10 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // in the cyclic exchange. Must be done while slaves are in PRE-OP state.
     for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
-        yInfo("configuring slave %d: %s", s, m_ctx.slavelist[s].name);
+        yInfo("%s: configuring slave %d: %s", m_kClassName.data(), s, m_ctx.slavelist[s].name);
 
         if (configurePDOMapping(s) != Error::NoError)
         {
-
             return Error::ConfigFailed;
         }
     }
@@ -326,7 +331,8 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
     if (m_ctx.slavelist[ALL].state != EC_STATE_SAFE_OP)
     {
-        yError("Ring failed to reach SAFE-OP (AL-status 0x%04x)",
+        yError("%s: Ring failed to reach SAFE-OP (AL-status 0x%04x)",
+               m_kClassName.data(),
                m_ctx.slavelist[ALL].ALstatuscode);
         return Error::SlavesNotOp;
     }
@@ -362,7 +368,9 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // Check if transition was successful
     if (m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL)
     {
-        yError("Ring failed to reach OP (AL-status 0x%04x)", m_ctx.slavelist[ALL].ALstatuscode);
+        yError("%s: Ring failed to reach OP (AL-status 0x%04x)",
+               m_kClassName.data(),
+               m_ctx.slavelist[ALL].ALstatuscode);
         return Error::SlavesNotOp;
     }
 
@@ -398,7 +406,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // Mark initialization as complete
     m_initialized = true;
 
-    yInfo("EtherCAT: ring is OPERATIONAL");
+    yInfo("%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
     return Error::NoError;
 }
 
@@ -406,8 +414,9 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
 {
     // Ensure we are initialized before attempting communication
     if (!m_initialized)
+    {
         return Error::NotInitialized;
-
+    }
     // Perform cyclic process data exchange with thread safety
     std::lock_guard<std::mutex> lk(m_ioMtx);
     ecx_send_processdata(&m_ctx);
@@ -455,7 +464,9 @@ void EthercatManager::errorMonitorLoop() noexcept
 std::string EthercatManager::getName(int slaveIndex) const noexcept
 {
     if (!indexValid(slaveIndex))
+    {
         return {};
+    }
     return m_ctx.slavelist[slaveIndex].name;
 }
 
