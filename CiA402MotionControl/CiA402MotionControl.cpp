@@ -70,8 +70,6 @@ struct CiA402MotionControl::Impl
     ::CiA402::EthercatManager ethercatManager;
 
     // Constants (unit conversions used throughout)
-    static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // rpm → deg/s
-    static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // deg/s → rpm
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
 
     //--------------------------------------------------------------------------
