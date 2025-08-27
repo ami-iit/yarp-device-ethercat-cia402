@@ -9,7 +9,6 @@
 #include <yarp/os/LogStream.h>
 #include <yarp/os/Value.h>
 
-
 // STD
 #include <algorithm>
 #include <cmath>
@@ -74,7 +73,6 @@ struct CiA402MotionControl::Impl
     static constexpr double RPM_TO_DEG_PER_SEC = 360.0 / 60.0; // rpm → deg/s
     static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // deg/s → rpm
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
-
 
     //--------------------------------------------------------------------------
     // Parameters that come from the .xml file (see open())
@@ -155,12 +153,26 @@ struct CiA402MotionControl::Impl
         std::vector<bool> hasTorqueSP; // user provided a torque since entry?
         std::vector<bool> hasVelSP; // user provided a velocity since entry?
 
+        std::vector<double> jointPositionsDeg; // last requested target [deg] joint-side
+        std::vector<int32_t> targetCounts; // computed target for 0x607A (loop-shaft)
+        std::vector<bool> hasPosSP; // a new PP command available this cycle?
+        std::vector<bool> isRelative; // this set-point is relative
+        std::vector<bool> pulseHi; // drive CW bit4 high this cycle?
+        std::vector<bool> pulseCoolDown; // bring bit4 low next
+
         void resize(std::size_t n)
         {
             jointTorques.resize(n);
             jointVelocities.resize(n);
             hasTorqueSP.assign(n, false);
             hasVelSP.assign(n, false);
+
+            jointPositionsDeg.resize(n);
+            targetCounts.resize(n);
+            hasPosSP.assign(n, false);
+            isRelative.assign(n, false);
+            pulseHi.assign(n, false);
+            pulseCoolDown.assign(n, false);
         }
 
         void reset()
@@ -170,6 +182,12 @@ struct CiA402MotionControl::Impl
             std::fill(this->jointVelocities.begin(), this->jointVelocities.end(), 0.0);
             std::fill(this->hasTorqueSP.begin(), this->hasTorqueSP.end(), false);
             std::fill(this->hasVelSP.begin(), this->hasVelSP.end(), false);
+            std::fill(this->jointPositionsDeg.begin(), this->jointPositionsDeg.end(), 0.0);
+            std::fill(this->targetCounts.begin(), this->targetCounts.end(), 0);
+            std::fill(this->hasPosSP.begin(), this->hasPosSP.end(), false);
+            std::fill(this->isRelative.begin(), this->isRelative.end(), false);
+            std::fill(this->pulseHi.begin(), this->pulseHi.end(), false);
+            std::fill(this->pulseCoolDown.begin(), this->pulseCoolDown.end(), false);
         }
 
         void reset(int axis)
@@ -178,7 +196,13 @@ struct CiA402MotionControl::Impl
             this->jointTorques[axis] = 0.0;
             this->jointVelocities[axis] = 0.0;
             this->hasTorqueSP[axis] = false;
+            this->jointPositionsDeg[axis] = 0.0;
+            this->targetCounts[axis] = 0;
             this->hasVelSP[axis] = false;
+            this->hasPosSP[axis] = false;
+            this->isRelative[axis] = false;
+            this->pulseHi[axis] = false;
+            this->pulseCoolDown[axis] = false;
         }
     };
 
@@ -189,15 +213,67 @@ struct CiA402MotionControl::Impl
 
     // First-cycle latches and seed
     std::vector<bool> velLatched, trqLatched;
+    std::vector<bool> posLatched; // true if we have a valid target
     std::vector<double> torqueSeedNm;
     std::vector<int> lastActiveMode;
+
+    struct PrositionProfileState
+    {
+        std::mutex mutex;
+        std::vector<double> ppRefSpeedDegS;
+        std::vector<double> ppRefAccelerationDegSS;
+        std::vector<bool> ppHaltRequested;
+    };
+    PrositionProfileState ppState;
 
     bool opRequested{false}; // true after the first run() call
 
     Impl() = default;
     ~Impl() = default;
 
-   
+    // Convert joint degrees to loop-shaft counts for 0x607A, using the configured
+    // position-loop source (Enc1/Enc2) and mount (Motor/Joint).
+    int32_t jointDegToTargetCounts(size_t j, double jointDeg) const
+    {
+        // choose source and resolution
+        uint32_t res = 0;
+        Mount m = Mount::None;
+        switch (posLoopSrc[j])
+        {
+        case SensorSrc::Enc1:
+            res = enc1Res[j];
+            m = enc1Mount[j];
+            break;
+        case SensorSrc::Enc2:
+            res = enc2Res[j];
+            m = enc2Mount[j];
+            break;
+        default:
+            if (enc1Mount[j] != Mount::None)
+            {
+                res = enc1Res[j];
+                m = enc1Mount[j];
+            } else
+            {
+                res = enc2Res[j];
+                m = enc2Mount[j];
+            }
+            break;
+        }
+        double shaftDeg = jointDeg;
+        if (m == Mount::Motor)
+            shaftDeg = jointDeg * gearRatio[j];
+        else if (m == Mount::Joint)
+            shaftDeg = jointDeg; // pass-through
+        const double cnt = (res ? (shaftDeg / 360.0) * static_cast<double>(res) : 0.0);
+        long long q = llround(cnt);
+        if (q > std::numeric_limits<int32_t>::max())
+            q = std::numeric_limits<int32_t>::max();
+        if (q < std::numeric_limits<int32_t>::min())
+            q = std::numeric_limits<int32_t>::min();
+        return static_cast<int32_t>(q);
+    }
+
     void fillJointNames()
     {
         for (size_t j = 0; j < numAxes; ++j)
@@ -487,6 +563,57 @@ struct CiA402MotionControl::Impl
                     // Convert deg/s → native velocity on the selected shaft for 0x60FF
                     const double vel = shaft_deg_s * this->degSToVel[j];
                     rx->TargetVelocity = static_cast<int32_t>(std::llround(vel));
+                }
+            }
+
+            // ---------- POSITION (PP) ----------
+            if (opMode == VOCAB_CM_POSITION)
+            {
+
+                if (this->ppState.ppHaltRequested[j])
+                    rx->Controlword |= (1u << 8);
+                else
+                    rx->Controlword &= ~(1u << 8);
+                // latch on first cycle in PP → do nothing until a user set-point arrives
+                if (!posLatched[j])
+                {
+                    // keep bit 5 asserted in PP (single-set-point method)
+                    rx->Controlword |= (1u << 5); // Change set immediately
+                    rx->Controlword &= ~(1u << 4); // make sure New set-point is low first
+                    posLatched[j] = true;
+                    // no command until user calls positionMove/relativeMove
+                } else
+                {
+                    // (A) Always assert bit 5 in PP
+                    rx->Controlword |= (1u << 5);
+
+                    // (B) If the previous cycle drove bit4 high, bring it low now (one-shot pulse)
+                    if (setPoints.pulseCoolDown[j])
+                    {
+                        rx->Controlword &= ~(1u << 4);
+                        setPoints.pulseCoolDown[j] = false;
+                    }
+
+                    // (C) New set-point pending? write 0x607A and raise bit4
+                    if (setPoints.hasPosSP[j] || setPoints.pulseHi[j])
+                    {
+                        // Absolute/Relative selection (CW bit 6)
+                        if (setPoints.isRelative[j])
+                            rx->Controlword |= (1u << 6);
+                        else
+                            rx->Controlword &= ~(1u << 6);
+
+                        // Target position (0x607A)
+                        rx->TargetPosition = setPoints.targetCounts[j];
+
+                        // New set-point pulse (rising edge)
+                        rx->Controlword |= (1u << 4);
+
+                        // consume the request and arm cooldown to drop bit4 next cycle
+                        setPoints.hasPosSP[j] = false;
+                        setPoints.pulseHi[j] = false;
+                        setPoints.pulseCoolDown[j] = true;
+                    }
                 }
             }
         }
@@ -1302,7 +1429,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->sm.resize(m_impl->numAxes);
     m_impl->velLatched.assign(m_impl->numAxes, false);
     m_impl->trqLatched.assign(m_impl->numAxes, false);
+    m_impl->posLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
+    m_impl->ppState.ppRefSpeedDegS.assign(m_impl->numAxes, 0.0);
+    m_impl->ppState.ppRefAccelerationDegSS.assign(m_impl->numAxes, 0.0);
+    m_impl->ppState.ppHaltRequested.assign(m_impl->numAxes, false);
 
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
@@ -1462,7 +1593,7 @@ void CiA402MotionControl::run()
             if (m_impl->controlModeState.active[j] != newActive)
             {
                 // entering a control mode: arm latches and clear "has SP" flags
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j] = false;
                 m_impl->setPoints.reset(j);
             }
 
@@ -2336,16 +2467,65 @@ bool CiA402MotionControl::getRefVelocities(const int n_joint, const int* joints,
     return true;
 }
 
-bool CiA402MotionControl::setRefAcceleration(int j, double acc)
+// Acceleration is expressed in YARP joint units [deg/s^2].
+// For PP we SDO-write 0x6083/0x6084/0x6085 in rpm/s (deg/s^2 ÷ 6).
+// For CSV we just cache the value (no standard accel SDO in CSV).
+
+bool CiA402MotionControl::setRefAcceleration(int j, double accDegS2)
 {
-    // no operation
-    return false;
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: setRefAcceleration: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    // store magnitude
+    if (accDegS2 < 0.0)
+    {
+        accDegS2 = -accDegS2;
+    }
+
+    // Only touch SDOs if PP is ACTIVE
+    int controlMode = -1;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        controlMode = m_impl->controlModeState.active[j];
+    }
+
+    if (controlMode != VOCAB_CM_POSITION)
+    {
+        // do nothing if not in PP
+        return true;
+    }
+
+    const int s = m_impl->firstSlave + j;
+    const int32_t acc = static_cast<int32_t>(std::llround(accDegS2 * m_impl->degSToVel[j]));
+    {
+        std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+        m_impl->ppState.ppRefAccelerationDegSS[j] = accDegS2;
+    }
+
+    // Profile acceleration / deceleration / quick-stop deceleration
+    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6083, 0x00, acc);
+    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6084, 0x00, acc);
+    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6085, 0x00, acc);
+
+    return true;
 }
 
-bool CiA402MotionControl::setRefAccelerations(const double* accs)
+bool CiA402MotionControl::setRefAccelerations(const double* accsDegS2)
 {
-    // no operation
-    return false;
+    if (!accsDegS2)
+    {
+        yError("%s: setRefAccelerations: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    bool ok = true;
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        ok = setRefAcceleration(static_cast<int>(j), accsDegS2[j]) && ok;
+    }
+    return ok;
 }
 
 bool CiA402MotionControl::getRefAcceleration(int j, double* acc)
@@ -2360,7 +2540,22 @@ bool CiA402MotionControl::getRefAcceleration(int j, double* acc)
         yError("%s: joint %d out of range", Impl::kClassName.data(), j);
         return false;
     }
-    *acc = 0.0; // CiA-402 does not support acceleration setpoints, so we return 0.0
+
+    int controlMode = -1;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        controlMode = m_impl->controlModeState.active[j];
+    }
+
+    if (controlMode == VOCAB_CM_POSITION)
+    {
+        // if in PP return the cached value
+        std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+        *acc = m_impl->ppState.ppRefAccelerationDegSS[j];
+        return true;
+    }
+
+    *acc = 0.0;
     return true;
 }
 
@@ -2371,20 +2566,54 @@ bool CiA402MotionControl::getRefAccelerations(double* accs)
         yError("%s: null pointer", Impl::kClassName.data());
         return false;
     }
-    std::memset(accs, 0, m_impl->numAxes * sizeof(double)); // CiA-402 does not support
-                                                            // acceleration setpoints, so we
-                                                            // return 0.0 for all axes
+
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        int controlMode = -1;
+        {
+            std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+            controlMode = m_impl->controlModeState.active[j];
+        }
+
+        if (controlMode == VOCAB_CM_POSITION)
+        {
+            // if in PP return the cached value
+            std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+            accs[j] = m_impl->ppState.ppRefAccelerationDegSS[j];
+        } else
+        {
+            accs[j] = 0.0;
+        }
+    }
     return true;
 }
 
+// stop() semantics:
+//  • PP → set CW bit 8 (HALT), decelerating with 0x6084.
+//  • CSV/others → zero TargetVelocity (current behavior kept).
+
 bool CiA402MotionControl::stop(int j)
 {
-    if (j >= static_cast<int>(m_impl->numAxes))
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
     {
-        yError("%s: joint %d out of range", Impl::kClassName.data(), j);
+        yError("%s: stop: joint %d out of range", Impl::kClassName.data(), j);
         return false;
     }
 
+    int controlMode = -1;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        controlMode = m_impl->controlModeState.active[j];
+    }
+
+    if (controlMode == VOCAB_CM_POSITION)
+    {
+        std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+        m_impl->ppState.ppHaltRequested[j] = true; // consumed in setSetPoints()
+        return true;
+    }
+
+    // CSV/others → zero velocity set-point
     {
         std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
         m_impl->setPoints.jointVelocities[j] = 0.0;
@@ -2395,6 +2624,18 @@ bool CiA402MotionControl::stop(int j)
 
 bool CiA402MotionControl::stop()
 {
+    // PP axes → HALT; non-PP axes → velocity 0
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            if (m_impl->controlModeState.active[j] == VOCAB_CM_POSITION)
+            {
+                std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+                m_impl->ppState.ppHaltRequested[j] = true;
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
         std::fill(m_impl->setPoints.jointVelocities.begin(),
@@ -2580,4 +2821,369 @@ bool CiA402MotionControl::getLastJointFault(int j, int& fault, std::string& mess
     }
     return true;
 }
+
+bool CiA402MotionControl::positionMove(int j, double refDeg)
+{
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: positionMove: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+    // accept only if PP is ACTIVE (same policy as your CSV path)
+    int controlMode = -1;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        controlMode = m_impl->controlModeState.active[j];
+    }
+
+    if (controlMode != VOCAB_CM_POSITION)
+    {
+        yError("%s: positionMove rejected: POSITION mode not active for joint %d",
+               Impl::kClassName.data(),
+               j);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    m_impl->setPoints.jointPositionsDeg[j] = refDeg;
+    m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refDeg);
+    m_impl->setPoints.isRelative[j] = false;
+    m_impl->setPoints.hasPosSP[j] = true;
+    m_impl->setPoints.pulseHi[j] = true; // schedule rising edge on CW bit4
+    return true;
+}
+
+bool CiA402MotionControl::positionMove(const double* refsDeg)
+{
+    if (!refsDeg)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    // all axes must be in PP
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+            if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION)
+            {
+                yError("%s: positionMove rejected: POSITION mode not active on joint %zu",
+                       Impl::kClassName.data(),
+                       j);
+                return false;
+            }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        m_impl->setPoints.jointPositionsDeg[j] = refsDeg[j];
+        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(j, refsDeg[j]);
+        m_impl->setPoints.isRelative[j] = false;
+        m_impl->setPoints.hasPosSP[j] = true;
+        m_impl->setPoints.pulseHi[j] = true;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::positionMove(const int n, const int* joints, const double* refsDeg)
+{
+    if (!joints || !refsDeg || n <= 0)
+    {
+        yError("%s: invalid args", Impl::kClassName.data());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n; ++k)
+        {
+            if (joints[k] < 0 || joints[k] >= static_cast<int>(m_impl->numAxes))
+                return false;
+            if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_POSITION)
+            {
+                yError("%s: positionMove rejected: POSITION mode not active on joint %d",
+                       Impl::kClassName.data(),
+                       joints[k]);
+                return false;
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        const int j = joints[k];
+        m_impl->setPoints.jointPositionsDeg[j] = refsDeg[k];
+        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refsDeg[k]);
+        m_impl->setPoints.isRelative[j] = false;
+        m_impl->setPoints.hasPosSP[j] = true;
+        m_impl->setPoints.pulseHi[j] = true;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::relativeMove(int j, double deltaDeg)
+{
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+        return false;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION)
+        {
+            yError("%s: relativeMove rejected: POSITION mode not active for joint %d",
+                   Impl::kClassName.data(),
+                   j);
+            return true;
+        }
+    }
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    m_impl->setPoints.jointPositionsDeg[j] += deltaDeg; // cache last target in deg
+    m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), deltaDeg);
+    m_impl->setPoints.isRelative[j] = true;
+    m_impl->setPoints.hasPosSP[j] = true;
+    m_impl->setPoints.pulseHi[j] = true;
+    return true;
+}
+
+bool CiA402MotionControl::relativeMove(const double* deltasDeg)
+{
+    if (!deltasDeg)
+        return false;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+            if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION)
+                return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        m_impl->setPoints.jointPositionsDeg[j] += deltasDeg[j];
+        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(j, deltasDeg[j]);
+        m_impl->setPoints.isRelative[j] = true;
+        m_impl->setPoints.hasPosSP[j] = true;
+        m_impl->setPoints.pulseHi[j] = true;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::relativeMove(const int n, const int* joints, const double* deltasDeg)
+{
+    if (!joints || !deltasDeg || n <= 0)
+        return false;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n; ++k)
+            if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_POSITION)
+                return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        const int j = joints[k];
+        m_impl->setPoints.jointPositionsDeg[j] += deltasDeg[k];
+        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), deltasDeg[k]);
+        m_impl->setPoints.isRelative[j] = true;
+        m_impl->setPoints.hasPosSP[j] = true;
+        m_impl->setPoints.pulseHi[j] = true;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::checkMotionDone(int j, bool* flag)
+{
+    if (!flag)
+        return false;
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+        return false;
+
+    const int s = m_impl->firstSlave + j;
+    auto tx = m_impl->ethercatManager.getTxView(s);
+    const uint16_t sw = tx.get<uint16_t>(CiA402::TxField::Statusword, 0);
+    // If not in PP, we consider "done" to avoid blocking callers in other modes
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION)
+        {
+            *flag = true;
+            return true;
+        }
+    }
+    *flag = ((sw >> 10) & 0x1) != 0; // Target reached
+    return true;
+}
+
+bool CiA402MotionControl::checkMotionDone(bool* flag)
+{
+    if (!flag)
+        return false;
+    bool all = true;
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        bool f = true;
+        checkMotionDone(static_cast<int>(j), &f);
+        all = all && f;
+    }
+    *flag = all;
+    return true;
+}
+
+bool CiA402MotionControl::checkMotionDone(const int n, const int* joints, bool* flag)
+{
+    if (!joints || !flag || n <= 0)
+        return false;
+    bool all = true;
+    for (int k = 0; k < n; ++k)
+    {
+        bool f = true;
+        checkMotionDone(joints[k], &f);
+        all = all && f;
+    }
+    *flag = all;
+    return true;
+}
+
+bool CiA402MotionControl::setRefSpeed(int j, double spDegS)
+{
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: setRefSpeed: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    // Write 0x6081 only if PP is active (else just cache)
+    int controlMode = -1;
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        controlMode = m_impl->controlModeState.active[j];
+    }
+    if (controlMode != VOCAB_CM_POSITION)
+    {
+        yError("%s: setRefSpeed: VELOCITY mode not active for joint %d, not writing SDO",
+               Impl::kClassName.data(),
+               j);
+        return true;
+    }
+
+    // store setpoint
+    {
+        std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+        m_impl->ppState.ppRefSpeedDegS[j] = spDegS;
+    }
+    const int s = m_impl->firstSlave + j;
+    int32_t vel = static_cast<int32_t>(std::llround(spDegS * m_impl->degSToVel[j]));
+
+    // write SDO
+    m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
+    return true;
+}
+
+bool CiA402MotionControl::setRefSpeeds(const double* spDegS)
+{
+    if (spDegS == nullptr)
+    {
+        yError("%s: setRefSpeeds: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        this->setRefSpeed(static_cast<int>(j), spDegS[j]);
+    }
+    return true;
+}
+
+bool CiA402MotionControl::setRefSpeeds(const int n, const int* joints, const double* spDegS)
+{
+    if (!joints || !spDegS || n <= 0)
+    {
+        yError("%s: setRefSpeeds: invalid args", Impl::kClassName.data());
+        return false;
+    }
+
+    for (int k = 0; k < n; ++k)
+    {
+        this->setRefSpeed(joints[k], spDegS[k]);
+    }
+    return true;
+}
+
+bool CiA402MotionControl::getRefSpeed(int j, double* ref)
+{
+    if (!ref || j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getRefSpeed: invalid args", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+    *ref = m_impl->ppState.ppRefSpeedDegS[j];
+    return true;
+}
+bool CiA402MotionControl::getRefSpeeds(double* spds)
+{
+    if (!spds)
+    {
+        yError("%s: getRefSpeeds: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+    std::memcpy(spds, m_impl->ppState.ppRefSpeedDegS.data(), m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getRefSpeeds(const int n, const int* joints, double* spds)
+{
+    if (!joints || !spds || n <= 0)
+    {
+        yError("%s: getRefSpeeds: invalid args", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        spds[k] = m_impl->ppState.ppRefSpeedDegS[joints[k]];
+    }
+    return true;
+}
+
+bool CiA402MotionControl::getTargetPosition(const int j, double* ref)
+{
+    if (!ref || j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getTargetPosition: invalid args", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    *ref = m_impl->setPoints.jointPositionsDeg[j];
+    return true;
+}
+
+bool CiA402MotionControl::getTargetPositions(double* refs)
+{
+    if (refs == nullptr)
+    {
+        yError("%s: getTargetPositions: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(refs, m_impl->setPoints.jointPositionsDeg.data(), m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getTargetPositions(const int n, const int* joints, double* refs)
+{
+    if (!joints || !refs || n <= 0)
+    {
+        yError("%s: getTargetPositions: invalid args", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n; ++k)
+    {
+        refs[k] = m_impl->setPoints.jointPositionsDeg[joints[k]];
+    }
+    return true;
+}
+
 } // namespace yarp::dev
