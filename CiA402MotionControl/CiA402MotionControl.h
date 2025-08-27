@@ -11,6 +11,7 @@
 #include <yarp/dev/IAxisInfo.h>
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
+#include <yarp/dev/IJointFault.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/ITorqueControl.h>
 #include <yarp/dev/IVelocityControl.h>
@@ -27,13 +28,14 @@ namespace dev
  * This class owns the EtherCAT master cycle via yarp::os::PeriodicThread.
  */
 class CiA402MotionControl : public yarp::dev::DeviceDriver,
-                           public yarp::os::PeriodicThread,
-                           public yarp::dev::IMotorEncoders,
-                           public yarp::dev::IEncodersTimed,
-                           public yarp::dev::IAxisInfo,
-                           public yarp::dev::IControlMode,
-                           public yarp::dev::ITorqueControl,
-                           public yarp::dev::IVelocityControl
+                            public yarp::os::PeriodicThread,
+                            public yarp::dev::IMotorEncoders,
+                            public yarp::dev::IEncodersTimed,
+                            public yarp::dev::IAxisInfo,
+                            public yarp::dev::IControlMode,
+                            public yarp::dev::ITorqueControl,
+                            public yarp::dev::IVelocityControl,
+                            public yarp::dev::IJointFault
 {
 public:
     /**
@@ -43,8 +45,8 @@ public:
      * @param useSystemClock Whether to use the system clock for timing.
      */
     explicit CiA402MotionControl(double period,
-                                yarp::os::ShouldUseSystemClock useSystemClock
-                                = yarp::os::ShouldUseSystemClock::Yes);
+                                 yarp::os::ShouldUseSystemClock useSystemClock
+                                 = yarp::os::ShouldUseSystemClock::Yes);
     /**
      * @brief Default constructor.
      *
@@ -400,6 +402,15 @@ public:
     bool setRefTorques(const double* t) override;
 
     /**
+     * @brief Sets the reference torques for a subset of joints.
+     * @param n_joint Number of joints.
+     * @param joints Array of joint indices.
+     * @param t Array of reference torques to set.
+     * @return true if successful, false otherwise.
+     */
+    bool setRefTorques(const int n_joint, const int* joints, const double* t) override;
+
+    /**
      * @brief Sets the reference torque for a specific joint.
      * @param j Index of the joint.
      * @param t Reference torque to set.
@@ -490,7 +501,7 @@ public:
      * @return true if successful, false otherwise.
      */
     bool getRefVelocities(const int n_joint, const int* joints, double* vels) override;
-   
+
     /**
      * @brief (Unused in CSV mode) Sets the reference acceleration for a specific joint.
      *
@@ -588,6 +599,16 @@ public:
      * joints.
      */
     bool stop(const int n_joint, const int* joints) override;
+
+    // ---------------- IJointFault ----------------
+    /**
+     * @brief Gets the last joint fault for a specific joint.
+     * @param j Index of the joint.
+     * @param fault Reference to an integer to store the fault code.
+     * @param message Reference to a string to store the fault message.
+     * @return true if successful, false otherwise.
+     */
+    bool getLastJointFault(int j, int& fault, std::string& message) override;
 
 private:
     struct Impl;
