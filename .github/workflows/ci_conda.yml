@@ -27,7 +27,7 @@ jobs:
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
-        channels: conda-forge,robostack-jazzy
+        channels: conda-forge
         channel-priority: true
 
     - name: "📚 Install Dependencies"
