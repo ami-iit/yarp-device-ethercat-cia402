@@ -14,7 +14,7 @@
 #include <vector>
 
 // SOEM
-#include <ethercat.h>
+#include <soem/soem.h>
 
 namespace CiA402
 {
@@ -239,23 +239,27 @@ public:
     template <typename T>
     Error readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) noexcept;
 
+    std::string getName(int slaveIndex) const noexcept;
+
 private:
     /** @brief Background error/AL status monitor loop. */
     void errorMonitorLoop() noexcept;
 
     /**
      * @brief Validate a SOEM 1-based slave index.
+     * @param slaveIndex 1-based index to validate.
+     * @return True if valid (1 <= slaveIndex <= slavecount); false otherwise.
      */
-    bool indexValid(int idx) const noexcept
-    {
-        return idx >= 1 && idx <= ec_slavecount;
-    }
+    bool indexValid(int slaveIndex) const noexcept;
 
     /**
      * @brief Program the device PDO mapping and build Tx field tables.
      * @param s 1-based slave index.
      */
     Error configurePDOMapping(int s);
+
+    ecx_contextt m_ctx{}; ///< SOEM context structure.
+    bool m_portOpen{false}; ///< True if the network port was opened.
 
     std::atomic<bool> m_initialized{false}; ///< True after successful init().
     std::atomic<bool> m_runWatch{false}; ///< Controls error monitor thread.
@@ -289,7 +293,7 @@ EthercatManager::readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) n
     {
         std::lock_guard<std::mutex> lock(m_ioMtx);
         // ec_SDOread: slaveIndex, index, subindex, complete_access, size_ptr, data_ptr, timeout
-        rc = ec_SDOread(slaveIndex, idx, subIdx, false, &size, &out, EC_TIMEOUTRXM);
+        rc = ecx_SDOread(&m_ctx, slaveIndex, idx, subIdx, false, &size, &out, EC_TIMEOUTRXM);
     }
 
     // Convert SOEM result to our error enum

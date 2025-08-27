@@ -9,8 +9,6 @@
 #include <yarp/os/LogStream.h>
 #include <yarp/os/Value.h>
 
-// SOEM
-#include <ethercat.h>
 
 // STD
 #include <algorithm>
@@ -201,27 +199,13 @@ struct CiA402MotionControl::Impl
     Impl() = default;
     ~Impl() = default;
 
-    //--------------------------------------------------------------------------
-    // Utility: dump the AL state & status code of every slave (for debugging)
-    //--------------------------------------------------------------------------
-    void printAlStatusForAllSlaves() const
-    {
-        for (int i = 1; i <= ec_slavecount; ++i)
-        {
-            yError("  slave %2d  state 0x%02X  AL-status 0x%04X (%s)",
-                   i,
-                   ec_slave[i].state,
-                   ec_slave[i].ALstatuscode,
-                   ec_ALstatuscode2string(ec_slave[i].ALstatuscode));
-        }
-    }
-
+   
     void fillJointNames()
     {
         for (size_t j = 0; j < numAxes; ++j)
         {
             const int slaveIdx = firstSlave + static_cast<int>(j);
-            this->variables.jointNames[j] = ec_slave[slaveIdx].name;
+            this->variables.jointNames[j] = ethercatManager.getName(slaveIdx);
         }
     }
 
@@ -1129,11 +1113,6 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
-    yInfo("%s: %d slaves detected, OPERATIONAL, WKC=%d",
-          Impl::kClassName.data(),
-          ec_slavecount,
-          m_impl->ethercatManager.getWorkingCounter());
-
     // =========================================================================
     // DRIVE LOOP SOURCE CONFIGURATION READING
     // =========================================================================
@@ -1309,7 +1288,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
     if (!m_impl->readTorqueValues())
     {
-        ec_close();
+        yError("%s: failed to read torque values", Impl::kClassName.data());
         return false;
     }
 
