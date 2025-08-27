@@ -75,8 +75,6 @@ struct CiA402MotionControl::Impl
     static constexpr double DEG_PER_SEC_TO_RPM = 60.0 / 360.0; // deg/s → rpm
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
 
-    // SOEM needs one contiguous memory area for every byte that travels on the bus.
-    char ioMap[4096] = {0};
 
     //--------------------------------------------------------------------------
     // Parameters that come from the .xml file (see open())
