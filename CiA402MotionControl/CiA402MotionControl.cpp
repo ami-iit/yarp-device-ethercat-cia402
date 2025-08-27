@@ -1482,8 +1482,7 @@ void CiA402MotionControl::run()
             }
 
             // Detect mode entry to (re)arm first-cycle latches
-            if (m_impl->controlModeState.active[j] != newActive
-                && (newActive != VOCAB_CM_IDLE || newActive != VOCAB_CM_FORCE_IDLE))
+            if (m_impl->controlModeState.active[j] != newActive)
             {
                 // entering a control mode: arm latches and clear "has SP" flags
                 m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
