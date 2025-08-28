@@ -239,6 +239,18 @@ public:
     template <typename T>
     Error readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) noexcept;
 
+    /**
+     * @brief Write an SDO value to a slave (blocking call).
+     * @tparam T Trivially copyable integral type matching the object size.
+     * @param slaveIndex 1-based slave index.
+     * @param idx Object index (e.g., 0x6040).
+     * @param subIdx Object subindex.
+     * @param value Value to write.
+     * @return Error::NoError on success; an error code otherwise.
+     */
+    template <typename T>
+    Error writeSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, const T& value) noexcept;
+
     std::string getName(int slaveIndex) const noexcept;
 
 private:
@@ -274,6 +286,8 @@ private:
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
 
     mutable std::mutex m_ioMtx; ///< Protects IO/SDO accesses.
+
+    static constexpr std::string_view m_kClassName = "EthercatManager"; // Class name for logging
 };
 
 template <typename T>
@@ -294,6 +308,36 @@ EthercatManager::readSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, T& out) n
         std::lock_guard<std::mutex> lock(m_ioMtx);
         // ec_SDOread: slaveIndex, index, subindex, complete_access, size_ptr, data_ptr, timeout
         rc = ecx_SDOread(&m_ctx, slaveIndex, idx, subIdx, false, &size, &out, EC_TIMEOUTRXM);
+    }
+
+    // Convert SOEM result to our error enum
+    return (rc > 0) ? Error::NoError : Error::PdoExchangeFailed;
+}
+
+template <typename T>
+EthercatManager::Error
+EthercatManager::writeSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, const T& value) noexcept
+{
+    // Validate preconditions before attempting EtherCAT operation
+    if (!m_initialized.load())
+        return Error::NotInitialized;
+    if (!indexValid(slaveIndex))
+        return Error::InvalidSlaveIndex;
+
+    int size = sizeof(T); // Expected data size for type T
+    int rc = 0; // SOEM return code (>0 = success, <=0 = error)
+    {
+        std::lock_guard<std::mutex> lock(m_ioMtx);
+
+        // ec_SDOwrite: slaveIndex, index, subindex, complete_access, size, data_ptr, timeout
+        rc = ecx_SDOwrite(&m_ctx,
+                          slaveIndex,
+                          idx,
+                          subIdx,
+                          false,
+                          size,
+                          const_cast<T*>(&value),
+                          EC_TIMEOUTRXM);
     }
 
     // Convert SOEM result to our error enum
