@@ -11,4 +11,6 @@ BSD-3-Clause license. -->
     <param name="velocity_feedback_motor"> ( "606C" )</param>    
     <param name="position_feedback_joint"> ( "6064" )</param>
     <param name="velocity_feedback_joint"> ( "606C" )</param>
+    <param name="position_window_deg"> ( 0.1 )</param>
+    <param name="timing_window_ms"> ( 100 )</param>
 </device>
