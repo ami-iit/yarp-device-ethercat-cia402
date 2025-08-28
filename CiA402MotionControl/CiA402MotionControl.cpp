@@ -110,6 +110,7 @@ struct CiA402MotionControl::Impl
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
+        std::vector<bool> targetReached; // cached Statusword bit 10
 
         void resizeContainers(std::size_t numAxes)
         {
@@ -124,6 +125,7 @@ struct CiA402MotionControl::Impl
             this->jointTorques.resize(numAxes);
             this->STO.resize(numAxes);
             this->SBC.resize(numAxes);
+            this->targetReached.resize(numAxes);
         }
     };
 
@@ -384,7 +386,85 @@ struct CiA402MotionControl::Impl
         return true;
     }
 
-    /**
+    // Convert loop-shaft counts to joint degrees, using the configured
+    double loopCountsToJointDeg(std::size_t j, double counts) const
+    {
+        // Pick loop sensor & mount (you already filled posLoopSrc[] in open())
+        uint32_t res = 0;
+        Mount mount = Mount::None;
+        switch (posLoopSrc[j])
+        {
+        case SensorSrc::Enc1:
+            res = enc1Res[j];
+            mount = enc1Mount[j];
+            break;
+        case SensorSrc::Enc2:
+            res = enc2Res[j];
+            mount = enc2Mount[j];
+            break;
+        default: // fallback: prefer enc1 if available
+            if (enc1Mount[j] != Mount::None && enc1Res[j] != 0)
+            {
+                res = enc1Res[j];
+                mount = enc1Mount[j];
+            } else
+            {
+                res = enc2Res[j];
+                mount = enc2Mount[j];
+            }
+            break;
+        }
+        if (res == 0 || mount == Mount::None)
+            return 0.0; // no info
+
+        const double shaftDeg = (counts / double(res)) * 360.0; // degrees on the measured shaft
+        // Convert to JOINT side depending on mount
+        if (mount == Mount::Motor)
+            return shaftDeg * gearRatioInv[j]; // motor → joint
+        /* mount == Mount::Joint */ return shaftDeg; // already joint
+    }
+
+    bool setPositionWindowDeg(int j, double winDeg, double winTime_ms)
+    {
+        if (j < 0 || j >= static_cast<int>(this->numAxes))
+        {
+            yError("%s: setPositionWindowDeg: invalid joint index", Impl::kClassName.data());
+            return false;
+        }
+        const int s = this->firstSlave + j;
+
+        uint32_t rawWin = 0;
+        if (std::isinf(winDeg))
+        {
+            // Per doc: monitoring OFF → target reached bit stays 0.
+            rawWin = 0xFFFFFFFFu;
+        } else
+        {
+            rawWin = static_cast<uint32_t>(
+                std::round(std::abs(this->jointDegToTargetCounts(std::size_t(j), winDeg))));
+        }
+        uint32_t rawTime = static_cast<uint32_t>(std::round(std::max(0.0, winTime_ms)));
+
+        auto e1 = this->ethercatManager.writeSDO<uint32_t>(s, 0x6067, 0x00, rawWin);
+        if (e1 != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: setPositionWindowDeg: SDO 0x6067 write failed on joint %d",
+                   Impl::kClassName.data(),
+                   j);
+            return false;
+        }
+        auto e2 = this->ethercatManager.writeSDO<uint32_t>(s, 0x6068, 0x00, rawTime);
+        if (e2 != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: setPositionWindowDeg: SDO 0x6068 write failed on joint %d",
+                   Impl::kClassName.data(),
+                   j);
+            return false;
+        }
+        return true;
+    }
+
+     /**
      * Read the gear-ratio (motor-revs : load-revs) for every axis and cache both
      * the ratio and its inverse.
      *
@@ -665,6 +745,12 @@ struct CiA402MotionControl::Impl
         {
             const int s = this->firstSlave + int(j);
             auto tx = this->ethercatManager.getTxView(s);
+
+            // =====================================================================
+            // Status word bits
+            // =====================================================================
+            const uint16_t sw = tx.get<uint16_t>(CiA402::TxField::Statusword);
+            this->variables.targetReached[j] = (sw & (1u << 10)) != 0;
 
             // =====================================================================
             // RAW DATA EXTRACTION FROM PDOs
@@ -1176,6 +1262,64 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return true;
     };
 
+    auto extractListOfDoubleFromSearchable = [this](const yarp::os::Searchable& cfg,
+                                                    const char* key,
+                                                    std::vector<double>& result) -> bool {
+        result.clear();
+
+        if (!cfg.check(key))
+        {
+            yError("%s: missing key '%s'", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const yarp::os::Value& v = cfg.find(key);
+        if (!v.isList())
+        {
+            yError("%s: key '%s' is not a list", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const yarp::os::Bottle* lst = v.asList();
+        if (!lst)
+        {
+            yError("%s: internal error: list for key '%s' is null", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const size_t expected = static_cast<size_t>(m_impl->numAxes);
+        const size_t actual = static_cast<size_t>(lst->size());
+        if (actual != expected)
+        {
+            yError("%s: list for key '%s' has incorrect size (%zu), expected (%zu)",
+                   Impl::kClassName.data(),
+                   key,
+                   actual,
+                   expected);
+            return false;
+        }
+
+        result.reserve(expected);
+        for (int i = 0; i < lst->size(); ++i)
+        {
+            const yarp::os::Value& elem = lst->get(i);
+
+            if (!elem.isFloat64() && !elem.isInt32() && !elem.isInt64() && !elem.isFloat32())
+            {
+                yError("%s: element %d in list for key '%s' is not a number",
+                       Impl::kClassName.data(),
+                       i,
+                       key);
+                result.clear();
+                return false;
+            }
+
+            result.push_back(elem.asFloat64());
+        }
+
+        return true;
+    };
+
     // Encoder mounting configuration (where each encoder is physically located)
     // enc1_mount must be list of "motor" or "joint"
     // enc2_mount must be list of "motor", "joint" or "none"
@@ -1210,6 +1354,14 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
                                            "velocity_feedback_motor",
                                            {"606C", "enc1", "enc2"},
                                            velSrcMotorStr))
+        return false;
+
+    std::vector<double> positionWindowDeg; // position window for targetReached
+    std::vector<double> timingWindowMs; // timing window for targetReached
+
+    if (!extractListOfDoubleFromSearchable(cfg, "position_window_deg", positionWindowDeg))
+        return false;
+    if (!extractListOfDoubleFromSearchable(cfg, "timing_window_ms", timingWindowMs))
         return false;
 
     for (size_t j = 0; j < m_impl->numAxes; ++j)
@@ -1416,7 +1568,19 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 4. Create YARP‑level containers and CiA‑402 state machines
+    // 4. Configure position windows (for positionReached)
+    // ---------------------------------------------------------------------
+    for (int j = 0; j < m_impl->numAxes; ++j)
+    {
+        if (!m_impl->setPositionWindowDeg(j, positionWindowDeg[j], timingWindowMs[j]))
+        {
+            yError("%s: failed to set position window for joint %d", Impl::kClassName.data(), j);
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. Create YARP‑level containers and CiA‑402 state machines
     // ---------------------------------------------------------------------
 
     // 10. Resize the containers
@@ -2989,39 +3153,37 @@ bool CiA402MotionControl::relativeMove(const int n, const int* joints, const dou
 
 bool CiA402MotionControl::checkMotionDone(int j, bool* flag)
 {
-    if (!flag)
-        return false;
-    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
-        return false;
-
-    const int s = m_impl->firstSlave + j;
-    auto tx = m_impl->ethercatManager.getTxView(s);
-    const uint16_t sw = tx.get<uint16_t>(CiA402::TxField::Statusword, 0);
-    // If not in PP, we consider "done" to avoid blocking callers in other modes
+    if (flag == nullptr)
     {
-        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
-        if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION)
-        {
-            *flag = true;
-            return true;
-        }
+        yError("%s: checkMotionDone: null pointer", Impl::kClassName.data());
+        return false;
     }
-    *flag = ((sw >> 10) & 0x1) != 0; // Target reached
+
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: checkMotionDone: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    *flag = m_impl->variables.targetReached[j];
     return true;
 }
 
 bool CiA402MotionControl::checkMotionDone(bool* flag)
 {
-    if (!flag)
+    if (flag == nullptr)
+    {
+        yError("%s: checkMotionDone: null pointer", Impl::kClassName.data());
         return false;
-    bool all = true;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        bool f = true;
-        checkMotionDone(static_cast<int>(j), &f);
-        all = all && f;
+        flag[j] = m_impl->variables.targetReached[j];
     }
-    *flag = all;
+
     return true;
 }
 
