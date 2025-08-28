@@ -36,7 +36,7 @@ jobs:
         # Workaround for 🔧 https://github.com/conda-incubator/setup-miniconda/issues/186
         conda config --remove channels defaults
         # Dependencies
-        conda install cmake compilers make ninja pkg-config \
+        conda install cmake cxx-compiler make ninja pkg-config \
                       "soem>=2.0.0" yarp
 
     - name: "🔍 Print used environment"
