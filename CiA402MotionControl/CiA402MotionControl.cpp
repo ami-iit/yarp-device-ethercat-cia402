@@ -464,7 +464,7 @@ struct CiA402MotionControl::Impl
         return true;
     }
 
-     /**
+    /**
      * Read the gear-ratio (motor-revs : load-revs) for every axis and cache both
      * the ratio and its inverse.
      *
@@ -3210,30 +3210,56 @@ bool CiA402MotionControl::setRefSpeed(int j, double spDegS)
         return false;
     }
 
-    // Write 0x6081 only if PP is active (else just cache)
-    int controlMode = -1;
+    // Only write SDO if PP is active (current behavior)
+    int cm = -1;
     {
         std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
-        controlMode = m_impl->controlModeState.active[j];
+        cm = m_impl->controlModeState.active[j];
     }
-    if (controlMode != VOCAB_CM_POSITION)
+    if (cm != VOCAB_CM_POSITION)
     {
-        yError("%s: setRefSpeed: VELOCITY mode not active for joint %d, not writing SDO",
+        yError("%s: setRefSpeed: POSITION mode not active for joint %d, not writing SDO",
                Impl::kClassName.data(),
                j);
         return true;
     }
 
-    // store setpoint
+    // Cache for getRefSpeed()
     {
         std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
         m_impl->ppState.ppRefSpeedDegS[j] = spDegS;
     }
-    const int s = m_impl->firstSlave + j;
-    int32_t vel = static_cast<int32_t>(std::llround(spDegS * m_impl->degSToVel[j]));
 
-    // write SDO
-    m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
+    // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
+    double shaft_deg_s = spDegS; // default assume joint shaft
+    switch (m_impl->velLoopSrc[j])
+    {
+    case Impl::SensorSrc::Enc1:
+        if (m_impl->enc1Mount[j] == Impl::Mount::Motor)
+            shaft_deg_s = spDegS * m_impl->gearRatio[j];
+        else if (m_impl->enc1Mount[j] == Impl::Mount::Joint)
+            shaft_deg_s = spDegS;
+        break;
+    case Impl::SensorSrc::Enc2:
+        if (m_impl->enc2Mount[j] == Impl::Mount::Motor)
+            shaft_deg_s = spDegS * m_impl->gearRatio[j];
+        else if (m_impl->enc2Mount[j] == Impl::Mount::Joint)
+            shaft_deg_s = spDegS;
+        break;
+    case Impl::SensorSrc::Unknown:
+    default:
+        // Fallback: if we know which encoder is motor-mounted, assume that one; otherwise leave as
+        // joint.
+        if (m_impl->enc1Mount[j] == Impl::Mount::Motor
+            || m_impl->enc2Mount[j] == Impl::Mount::Motor)
+            shaft_deg_s = spDegS * m_impl->gearRatio[j];
+        break;
+    }
+
+    // Convert deg/s on the loop shaft -> device velocity units using 0x60A9
+    const int s = m_impl->firstSlave + j;
+    const int32_t vel = static_cast<int32_t>(std::llround(shaft_deg_s * m_impl->degSToVel[j]));
+    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
     return true;
 }
 
