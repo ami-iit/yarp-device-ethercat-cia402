@@ -1,0 +1,61 @@
+name: "⚙️ C++ CI Workflow with conda-forge dependencies"
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+  schedule:
+  # * is a special character in YAML so you have to quote this string
+  # Execute a "nightly" build at 2 AM UTC
+  - cron:  '0 2 * * *'  #  Nightly build
+
+jobs:
+  build:
+    name: "🔨 [${{ matrix.os }}@${{ matrix.build_type }}@conda]"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+        os: [ubuntu-latest]
+      fail-fast: false
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-variant: Miniforge3
+        miniforge-version: latest
+        channels: conda-forge
+        channel-priority: true
+        conda-remove-defaults: true
+
+    - name: "📚 Install Dependencies"
+      shell: bash -l {0}
+      run: |
+        # Dependencies
+        conda install cmake cxx-compiler make ninja pkg-config \
+                      "soem>=2.0.0" yarp
+
+    - name: "🔍 Print used environment"
+      shell: bash -l {0}
+      run: |
+        conda list
+        env
+
+    - name: "⚙️ Configure [Linux]"
+      if: contains(matrix.os, 'ubuntu')
+      shell: bash -l {0}
+      run: |
+        mkdir -p build
+        cd build
+        cmake -GNinja -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ..
+
+    - name: "🏗️ Build [Linux]"
+      if: contains(matrix.os, 'ubuntu')
+      shell: bash -l {0}
+      run: |
+        cd build
+        cmake --build . --config ${{ matrix.build_type }}
