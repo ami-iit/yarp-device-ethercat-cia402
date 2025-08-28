@@ -12,6 +12,7 @@
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IJointFault.h>
+#include <yarp/dev/IMotor.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/IPositionControl.h>
 #include <yarp/dev/ITorqueControl.h>
@@ -37,7 +38,8 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::ITorqueControl,
                             public yarp::dev::IVelocityControl,
                             public yarp::dev::IPositionControl,
-                            public yarp::dev::IJointFault
+                            public yarp::dev::IJointFault,
+                            public yarp::dev::IMotor
 {
 public:
     /**
@@ -932,6 +934,21 @@ public:
      * @note This function does not read the actual current positions.
      */
     bool getTargetPositions(const int n_joint, const int* joints, double* refs) override;
+
+    // ---------------- IMotor --------------
+    bool getNumberOfMotors(int* num) override;
+
+    bool getTemperature(int m, double* val) override;
+
+    bool getTemperatures(double* vals) override;
+
+    bool getTemperatureLimit(int m, double* temp) override;
+
+    bool setTemperatureLimit(int m, const double temp) override;
+
+    bool getGearboxRatio(int m, double* val) override;
+
+    bool setGearboxRatio(int m, const double val) override;
 
 private:
     struct Impl;

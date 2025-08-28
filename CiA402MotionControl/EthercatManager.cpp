@@ -192,6 +192,9 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
     tryMap(TxField::Enc2Pos2113_02, 0x2113, 0x02, 32); // Encoder 2 position
     tryMap(TxField::Enc2Vel2113_03, 0x2113, 0x03, 32); // Encoder 2 velocity
 
+    // temperature
+    tryMap(TxField::TemperatureDrive, 0x2031, 0x01, 32); // Drive temperature
+
     // Finalize the last TxPDO we were building
     if (!finalizeTx())
         return Error::ConfigFailed;
