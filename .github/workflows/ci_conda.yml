@@ -29,6 +29,7 @@ jobs:
         miniforge-version: latest
         channels: conda-forge
         channel-priority: true
+        conda-remove-defaults: true
 
     - name: "📚 Install Dependencies"
       shell: bash -l {0}
