@@ -145,11 +145,11 @@ struct CiA402MotionControl::Impl
         std::vector<int> prevCstFlavor; // previous flavor, for change detection
         mutable std::mutex mutex; // protects *both* vectors
 
-        void resize(std::size_t n, int initial = VOCAB_CM_IDLE)
+        void resize(std::size_t n)
         {
-            target.assign(n, initial);
+            target.assign(n, VOCAB_CM_IDLE);
             active = target;
-            cstFlavor.assign(n, VOCAB_CM_TORQUE);
+            cstFlavor.assign(n, VOCAB_CM_UNKNOWN);
             prevCstFlavor = cstFlavor;
         }
     };
@@ -1672,7 +1672,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->setPoints.resize(m_impl->numAxes);
     m_impl->setPoints.reset();
-    m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
+    m_impl->controlModeState.resize(m_impl->numAxes);
     m_impl->sm.resize(m_impl->numAxes);
     m_impl->velLatched.assign(m_impl->numAxes, false);
     m_impl->trqLatched.assign(m_impl->numAxes, false);
@@ -1837,7 +1837,9 @@ void CiA402MotionControl::run()
                     newActive = flavor;
 
                     // detect if the CST flavor changed since last time
-                    flavourChanged = (flavor != m_impl->controlModeState.prevCstFlavor[j]);
+                    flavourChanged
+                        = (flavor != m_impl->controlModeState.prevCstFlavor[j])
+                          || (m_impl->controlModeState.prevCstFlavor[j] == VOCAB_CM_UNKNOWN);
                 } else
                 {
                     newActive = Impl::ciaOpToYarp(activeOp);
