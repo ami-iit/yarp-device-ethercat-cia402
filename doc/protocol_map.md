@@ -3,11 +3,6 @@
 ## Summary
 Concise reference of the EtherCAT objects the device uses, where they are mapped, and how they are interpreted. Use this as the single source for indices, types, and meanings.
 
-## Scope
-- Audience: users and developers configuring or integrating the device
-- Covers: PDO entries, SDOs touched at init/run, and unit conversions
-- Excludes: encoder mounting and feedback selection logic (see related docs)
-
 ## Quick reference
 
 ### RxPDO (master → slave)

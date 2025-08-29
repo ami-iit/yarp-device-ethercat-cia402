@@ -3,11 +3,6 @@
 ## Summary
 How YARP control modes map to CiA‑402 operation modes and which targets are used, with brief notes on conversions.
 
-## Scope
-- Audience: users and developers issuing commands to the device
-- Covers: mode mapping, which RxPDO target is written, where feedback comes from
-- Excludes: protocol addresses (see protocol_map.md) and encoder mounting (see dual_encoder_handling.md)
-
 ## Quick reference
 
 | YARP mode         | CiA‑402 op (6060) | Target written        | Feedback read                 | Notes                                  |
