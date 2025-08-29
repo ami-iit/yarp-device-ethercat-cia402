@@ -3820,11 +3820,6 @@ bool CiA402MotionControl::setRefCurrents(const int n_motor, const int* motors, c
         std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
         for (int k = 0; k < n_motor; ++k)
         {
-            if (motors[k] >= static_cast<int>(m_impl->numAxes))
-            {
-                yError("%s: joint %d out of range", Impl::kClassName.data(), motors[k]);
-                return false;
-            }
             if (m_impl->controlModeState.active[motors[k]] != VOCAB_CM_CURRENT)
             {
                 yError("%s: setRefCurrents rejected: CURRENT mode is not active for the joint %d",
