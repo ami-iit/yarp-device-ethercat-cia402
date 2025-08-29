@@ -160,12 +160,15 @@ struct CiA402MotionControl::Impl
         std::mutex mutex; // protects the following vectors
         std::vector<double> jointTorques; // for setTorque()
         std::vector<double> jointVelocities; // for velocityMove() or joint velocity commands
+        std::vector<double> motorCurrents; // for setCurrent()
         std::vector<bool> hasTorqueSP; // user provided a torque since entry?
         std::vector<bool> hasVelSP; // user provided a velocity since entry?
+        std::vector<bool> hasCurrentSP; // user provided a current since entry?
 
         std::vector<double> jointPositionsDeg; // last requested target [deg] joint-side
         std::vector<int32_t> targetCounts; // computed target for 0x607A (loop-shaft)
         std::vector<bool> hasPosSP; // a new PP command available this cycle?
+
         std::vector<bool> isRelative; // this set-point is relative
         std::vector<bool> pulseHi; // drive CW bit4 high this cycle?
         std::vector<bool> pulseCoolDown; // bring bit4 low next
@@ -174,8 +177,10 @@ struct CiA402MotionControl::Impl
         {
             jointTorques.resize(n);
             jointVelocities.resize(n);
+            motorCurrents.resize(n);
             hasTorqueSP.assign(n, false);
             hasVelSP.assign(n, false);
+            hasCurrentSP.assign(n, false);
 
             jointPositionsDeg.resize(n);
             targetCounts.resize(n);
@@ -190,7 +195,9 @@ struct CiA402MotionControl::Impl
             std::lock_guard<std::mutex> lock(this->mutex);
             std::fill(this->jointTorques.begin(), this->jointTorques.end(), 0.0);
             std::fill(this->jointVelocities.begin(), this->jointVelocities.end(), 0.0);
+            std::fill(this->motorCurrents.begin(), this->motorCurrents.end(), 0.0);
             std::fill(this->hasTorqueSP.begin(), this->hasTorqueSP.end(), false);
+            std::fill(this->hasCurrentSP.begin(), this->hasCurrentSP.end(), false);
             std::fill(this->hasVelSP.begin(), this->hasVelSP.end(), false);
             std::fill(this->jointPositionsDeg.begin(), this->jointPositionsDeg.end(), 0.0);
             std::fill(this->targetCounts.begin(), this->targetCounts.end(), 0);
@@ -205,7 +212,9 @@ struct CiA402MotionControl::Impl
             std::lock_guard<std::mutex> lock(this->mutex);
             this->jointTorques[axis] = 0.0;
             this->jointVelocities[axis] = 0.0;
+            this->motorCurrents[axis] = 0.0;
             this->hasTorqueSP[axis] = false;
+            this->hasCurrentSP[axis] = false;
             this->jointPositionsDeg[axis] = 0.0;
             this->targetCounts[axis] = 0;
             this->hasVelSP[axis] = false;
@@ -222,7 +231,7 @@ struct CiA402MotionControl::Impl
     std::vector<std::unique_ptr<CiA402::StateMachine>> sm;
 
     // First-cycle latches and seed
-    std::vector<bool> velLatched, trqLatched;
+    std::vector<bool> velLatched, trqLatched, currLatched;
     std::vector<bool> posLatched; // true if we have a valid target
     std::vector<double> torqueSeedNm;
     std::vector<int> lastActiveMode;
@@ -795,6 +804,27 @@ struct CiA402MotionControl::Impl
                         setPoints.pulseHi[j] = false;
                         setPoints.pulseCoolDown[j] = true;
                     }
+                }
+            }
+
+            if (opMode == VOCAB_CM_CURRENT)
+            {
+                if (!this->currLatched[j])
+                {
+                    // the current control is actually a torque control
+                    rx->TargetTorque = 0;
+                    this->currLatched[j] = true;
+                } else
+                {
+                    // YARP gives joint torque [Nm] → convert to MOTOR torque before 0x6071
+                    const double currentA = setPoints.hasCurrentSP[j] ? setPoints.motorCurrents[j]
+                                                                      : 0.0;
+
+                    // 0x6071 is per-thousand of rated MOTOR torque (0x6076 in Nm)
+                    const int16_t tq_thousand = static_cast<int16_t>(std::llround(
+                        (ratedMotorTorqueNm[j] != 0.0 ? currentA / ratedMotorTorqueNm[j] : 0.0)
+                        * 1000.0));
+                    rx->TargetTorque = tq_thousand;
                 }
             }
         }
@@ -1715,6 +1745,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->sm.resize(m_impl->numAxes);
     m_impl->velLatched.assign(m_impl->numAxes, false);
     m_impl->trqLatched.assign(m_impl->numAxes, false);
+    m_impl->currLatched.assign(m_impl->numAxes, false);
     m_impl->posLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppRefSpeedDegS.assign(m_impl->numAxes, 0.0);
@@ -1798,7 +1829,7 @@ void CiA402MotionControl::run()
                 rx->OpMode = 0; // neutral
                 // Clear user setpoints/latches immediately
                 m_impl->setPoints.reset((int)j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
                 continue; // skip normal update-path this cycle
             }
 
@@ -1902,7 +1933,7 @@ void CiA402MotionControl::run()
                 || newActive == VOCAB_CM_FORCE_IDLE)
             {
                 m_impl->setPoints.reset(j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
                 if (hwInhibit)
                 {
                     m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
@@ -1913,7 +1944,8 @@ void CiA402MotionControl::run()
             if (m_impl->controlModeState.active[j] != newActive || flavourChanged)
             {
                 // entering a control mode: arm latches and clear "has SP" flags
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j]
+                    = m_impl->currLatched[j] = false;
                 m_impl->setPoints.reset(j);
             }
 
@@ -3703,7 +3735,26 @@ bool CiA402MotionControl::setRefCurrents(const double* currs)
         return false;
     }
 
-    return false;
+    {
+        // check that all the joints are in CURRENT mode
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            if (m_impl->controlModeState.active[j] != VOCAB_CM_CURRENT)
+            {
+                yError("%s: setRefCurrents rejected: CURRENT mode is not active for the joint "
+                       "%zu",
+                       Impl::kClassName.data(),
+                       j);
+                return false; // reject
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(m_impl->setPoints.motorCurrents.data(), currs, m_impl->numAxes * sizeof(double));
+    std::fill(m_impl->setPoints.hasCurrentSP.begin(), m_impl->setPoints.hasCurrentSP.end(), true);
+    return true;
 }
 
 bool CiA402MotionControl::setRefCurrent(int m, double curr)
@@ -3714,7 +3765,23 @@ bool CiA402MotionControl::setRefCurrent(int m, double curr)
         return false;
     }
 
-    return true;
+    // (a/b) Only accept if CURRENT is ACTIVE; otherwise reject (not considered)
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        if (m_impl->controlModeState.active[m] != VOCAB_CM_CURRENT)
+        {
+            yError("%s: setRefCurrent rejected: CURRENT mode is not active for the joint %d",
+                   Impl::kClassName.data(),
+                   m);
+            return false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    m_impl->setPoints.motorCurrents[m] = curr;
+    m_impl->setPoints.hasCurrentSP[m] = true; // (b)
+
+    return false;
 }
 
 bool CiA402MotionControl::setRefCurrents(const int n_motor, const int* motors, const double* currs)
@@ -3737,6 +3804,33 @@ bool CiA402MotionControl::setRefCurrents(const int n_motor, const int* motors, c
             return false;
         }
     }
+
+    // check that all the joints are in CURRENT mode
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n_motor; ++k)
+        {
+            if (motors[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yError("%s: joint %d out of range", Impl::kClassName.data(), motors[k]);
+                return false;
+            }
+            if (m_impl->controlModeState.active[motors[k]] != VOCAB_CM_CURRENT)
+            {
+                yError("%s: setRefCurrents rejected: CURRENT mode is not active for the joint %d",
+                       Impl::kClassName.data(),
+                       motors[k]);
+                return false; // reject
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n_motor; ++k)
+    {
+        m_impl->setPoints.motorCurrents[motors[k]] = currs[k];
+        m_impl->setPoints.hasCurrentSP[motors[k]] = true;
+    }
     return true;
 }
 
@@ -3747,6 +3841,9 @@ bool CiA402MotionControl::getRefCurrents(double* currs)
         yError("%s: getRefCurrents: null pointer", Impl::kClassName.data());
         return false;
     }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(currs, m_impl->setPoints.motorCurrents.data(), m_impl->numAxes * sizeof(double));
     return true;
 }
 
@@ -3762,6 +3859,9 @@ bool CiA402MotionControl::getRefCurrent(int m, double* curr)
         yError("%s: getRefCurrent: motor %d out of range", Impl::kClassName.data(), m);
         return false;
     }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    *curr = m_impl->setPoints.motorCurrents[m];
     return true;
 }
 
