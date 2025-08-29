@@ -84,6 +84,8 @@ struct CiA402MotionControl::Impl
     //--------------------------------------------------------------------------
     std::vector<double> gearRatio; //  motor-revs : load-revs
     std::vector<double> gearRatioInv; // 1 / gearRatio
+    std::vector<double> torqueConstants; // [Nm/A] from 0x2003:01
+    std::vector<double> maxCurrentsA; // [A] from 0x6075
     std::vector<double> ratedMotorTorqueNm; // [Nm] from 0x6076
     std::vector<double> maxMotorTorqueNm; // [Nm] from 0x6072
     std::vector<uint32_t> enc1Res, enc2Res; // from 0x2110, 0x2112
@@ -106,6 +108,7 @@ struct CiA402MotionControl::Impl
         std::vector<double> jointVelocities; // for getJointVelocities()
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> jointTorques; // for getJointTorques()
+        std::vector<double> motorCurrents; // for getCurrents()
         std::vector<double> feedbackTime; // feedback time in seconds
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
@@ -124,6 +127,7 @@ struct CiA402MotionControl::Impl
             this->jointAccelerations.resize(numAxes);
             this->jointNames.resize(numAxes);
             this->jointTorques.resize(numAxes);
+            this->motorCurrents.resize(numAxes);
             this->STO.resize(numAxes);
             this->SBC.resize(numAxes);
             this->targetReached.resize(numAxes);
@@ -137,12 +141,16 @@ struct CiA402MotionControl::Impl
     {
         std::vector<int> target; // what the user asked for
         std::vector<int> active; // what the drive is really doing
+        std::vector<int> cstFlavor; // custom flavor for each axis (torque/current)
+        std::vector<int> prevCstFlavor; // previous flavor, for change detection
         mutable std::mutex mutex; // protects *both* vectors
 
-        void resize(std::size_t n, int initial = VOCAB_CM_IDLE)
+        void resize(std::size_t n)
         {
-            target.assign(n, initial);
+            target.assign(n, VOCAB_CM_IDLE);
             active = target;
+            cstFlavor.assign(n, VOCAB_CM_UNKNOWN);
+            prevCstFlavor = cstFlavor;
         }
     };
     ControlModeState controlModeState;
@@ -152,12 +160,15 @@ struct CiA402MotionControl::Impl
         std::mutex mutex; // protects the following vectors
         std::vector<double> jointTorques; // for setTorque()
         std::vector<double> jointVelocities; // for velocityMove() or joint velocity commands
+        std::vector<double> motorCurrents; // for setCurrent()
         std::vector<bool> hasTorqueSP; // user provided a torque since entry?
         std::vector<bool> hasVelSP; // user provided a velocity since entry?
+        std::vector<bool> hasCurrentSP; // user provided a current since entry?
 
         std::vector<double> jointPositionsDeg; // last requested target [deg] joint-side
         std::vector<int32_t> targetCounts; // computed target for 0x607A (loop-shaft)
         std::vector<bool> hasPosSP; // a new PP command available this cycle?
+
         std::vector<bool> isRelative; // this set-point is relative
         std::vector<bool> pulseHi; // drive CW bit4 high this cycle?
         std::vector<bool> pulseCoolDown; // bring bit4 low next
@@ -166,8 +177,10 @@ struct CiA402MotionControl::Impl
         {
             jointTorques.resize(n);
             jointVelocities.resize(n);
+            motorCurrents.resize(n);
             hasTorqueSP.assign(n, false);
             hasVelSP.assign(n, false);
+            hasCurrentSP.assign(n, false);
 
             jointPositionsDeg.resize(n);
             targetCounts.resize(n);
@@ -182,7 +195,9 @@ struct CiA402MotionControl::Impl
             std::lock_guard<std::mutex> lock(this->mutex);
             std::fill(this->jointTorques.begin(), this->jointTorques.end(), 0.0);
             std::fill(this->jointVelocities.begin(), this->jointVelocities.end(), 0.0);
+            std::fill(this->motorCurrents.begin(), this->motorCurrents.end(), 0.0);
             std::fill(this->hasTorqueSP.begin(), this->hasTorqueSP.end(), false);
+            std::fill(this->hasCurrentSP.begin(), this->hasCurrentSP.end(), false);
             std::fill(this->hasVelSP.begin(), this->hasVelSP.end(), false);
             std::fill(this->jointPositionsDeg.begin(), this->jointPositionsDeg.end(), 0.0);
             std::fill(this->targetCounts.begin(), this->targetCounts.end(), 0);
@@ -197,7 +212,9 @@ struct CiA402MotionControl::Impl
             std::lock_guard<std::mutex> lock(this->mutex);
             this->jointTorques[axis] = 0.0;
             this->jointVelocities[axis] = 0.0;
+            this->motorCurrents[axis] = 0.0;
             this->hasTorqueSP[axis] = false;
+            this->hasCurrentSP[axis] = false;
             this->jointPositionsDeg[axis] = 0.0;
             this->targetCounts[axis] = 0;
             this->hasVelSP[axis] = false;
@@ -214,7 +231,7 @@ struct CiA402MotionControl::Impl
     std::vector<std::unique_ptr<CiA402::StateMachine>> sm;
 
     // First-cycle latches and seed
-    std::vector<bool> velLatched, trqLatched;
+    std::vector<bool> velLatched, trqLatched, currLatched;
     std::vector<bool> posLatched; // true if we have a valid target
     std::vector<double> torqueSeedNm;
     std::vector<int> lastActiveMode;
@@ -466,6 +483,67 @@ struct CiA402MotionControl::Impl
         return true;
     }
 
+    bool readMotorConstants()
+    {
+        torqueConstants.resize(numAxes);
+        maxCurrentsA.resize(numAxes);
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int s = firstSlave + int(j);
+            int32_t tcMicroNmA = 0;
+            if (ethercatManager.readSDO<int32_t>(s, 0x2003, 0x02, tcMicroNmA)
+                    != ::CiA402::EthercatManager::Error::NoError
+                || tcMicroNmA == 0)
+            {
+                yWarning("%s: cannot read torque constant (0x2003:02) or zero → assume 1.0 Nm/A",
+                         kClassName.data());
+                torqueConstants[j] = 1.0;
+            } else
+            {
+                // convert from µNm/A to Nm/A
+                torqueConstants[j] = double(tcMicroNmA) * 1e-6;
+            }
+
+            // first of all we need to read the motor rated current
+            // 0x6075:00  Motor Rated Current (UNSIGNED32)
+            uint32_t ratedCurrentMilliA = 0;
+            double ratedCurrentA = 0.0;
+            if (ethercatManager.readSDO<uint32_t>(s, 0x6075, 0x00, ratedCurrentMilliA)
+                    != ::CiA402::EthercatManager::Error::NoError
+                || ratedCurrentMilliA == 0)
+            {
+                yWarning("%s: cannot read motor rated current (0x6075:00) or zero → assume 1.0 A",
+                         kClassName.data());
+                ratedCurrentA = 1.0;
+            } else
+            {
+                // convert from mA to A
+                ratedCurrentA = double(ratedCurrentMilliA) * 1e-3;
+            }
+
+            // Now we can read the max current 0x6073:0	16 bit unsigned
+            uint16_t maxPermille = 0;
+            if (ethercatManager.readSDO<uint16_t>(s, 0x6073, 0x00, maxPermille)
+                != ::CiA402::EthercatManager::Error::NoError)
+            {
+                yWarning("%s: cannot read max current (0x6073:00) or zero → assume 1000 ‰",
+                         kClassName.data());
+                maxPermille = 1000;
+            }
+
+            yDebug("%s: Joint %zu: max current %u ‰ → %f A. Torque constant %f Nm/A",
+                    kClassName.data(),
+                    j,
+                    maxPermille,
+                    (double(maxPermille) / 1000.0) * ratedCurrentA,
+                    this->torqueConstants[j]);
+
+            maxCurrentsA[j] = (double(maxPermille) / 1000.0) * ratedCurrentA;
+        }
+        return true;
+    }
+
     /**
      * Read the gear-ratio (motor-revs : load-revs) for every axis and cache both
      * the ratio and its inverse.
@@ -559,6 +637,40 @@ struct CiA402MotionControl::Impl
         return true;
     }
 
+    void setSDORefSpeed(int j, double spDegS)
+    {
+        // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
+        double shaft_deg_s = spDegS; // default assume joint shaft
+        switch (this->velLoopSrc[j])
+        {
+        case Impl::SensorSrc::Enc1:
+            if (this->enc1Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            else if (this->enc1Mount[j] == Impl::Mount::Joint)
+                shaft_deg_s = spDegS;
+            break;
+        case Impl::SensorSrc::Enc2:
+            if (this->enc2Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            else if (this->enc2Mount[j] == Impl::Mount::Joint)
+                shaft_deg_s = spDegS;
+            break;
+        case Impl::SensorSrc::Unknown:
+        default:
+            // Fallback: if we know which encoder is motor-mounted, assume that one; otherwise leave
+            // as joint.
+            if (this->enc1Mount[j] == Impl::Mount::Motor
+                || this->enc2Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            break;
+        }
+
+        // Convert deg/s on the loop shaft -> device velocity units using 0x60A9
+        const int s = this->firstSlave + j;
+        const int32_t vel = static_cast<int32_t>(std::llround(shaft_deg_s * this->degSToVel[j]));
+        (void)this->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
+    }
+
     bool setSetPoints()
     {
         std::lock_guard<std::mutex> lock(this->setPoints.mutex);
@@ -574,6 +686,11 @@ struct CiA402MotionControl::Impl
             const int s = firstSlave + int(j);
             auto rx = this->ethercatManager.getRxPDO(s);
             const int opMode = this->controlModeState.active[j];
+
+            // clean rx targets
+            rx->TargetPosition = 0;
+            rx->TargetTorque = 0;
+            rx->TargetVelocity = 0;
 
             // ---------- TORQUE (CST) ----------
             if (opMode == VOCAB_CM_TORQUE)
@@ -694,6 +811,30 @@ struct CiA402MotionControl::Impl
                         setPoints.pulseHi[j] = false;
                         setPoints.pulseCoolDown[j] = true;
                     }
+                }
+            }
+
+            if (opMode == VOCAB_CM_CURRENT)
+            {
+                if (!this->currLatched[j])
+                {
+                    // the current control is actually a torque control
+                    rx->TargetTorque = 0;
+                    this->currLatched[j] = true;
+                } else
+                {
+                    // YARP gives Currents [A] → convert to MOTOR torque before 0x6071
+                    const double currentA = setPoints.hasCurrentSP[j] ? setPoints.motorCurrents[j]
+                                                                      : 0.0;
+
+                    // convert the current in torque using the torque constant
+                    const double torqueNm = currentA * this->torqueConstants[j];
+
+                    // 0x6071 is per-thousand of rated MOTOR torque (0x6076 in Nm)
+                    const int16_t tq_thousand = static_cast<int16_t>(std::llround(
+                        (ratedMotorTorqueNm[j] != 0.0 ? torqueNm / ratedMotorTorqueNm[j] : 0.0)
+                        * 1000.0));
+                    rx->TargetTorque = tq_thousand;
                 }
             }
         }
@@ -909,6 +1050,7 @@ struct CiA402MotionControl::Impl
             const double motorNm = tq_per_thousand * this->ratedMotorTorqueNm[j];
             // Convert motor torque to joint torque using gear ratio
             this->variables.jointTorques[j] = motorNm * this->gearRatio[j];
+            this->variables.motorCurrents[j] = motorNm / this->torqueConstants[j];
 
             // --------- Safety signals (if mapped into PDOs) ----------
             // These provide real-time status of safety functions
@@ -964,6 +1106,15 @@ struct CiA402MotionControl::Impl
     //--------------------------------------------------------------------------
     //  CiA-402 ➜ YARP   (decode for diagnostics)
     //--------------------------------------------------------------------------
+    int ciaOpToYarpWithFlavor(int op, int cstFlavor)
+    {
+        if (op == 10)
+        {
+            return (cstFlavor == VOCAB_CM_CURRENT) ? VOCAB_CM_CURRENT : VOCAB_CM_TORQUE;
+        }
+        return this->ciaOpToYarp(op);
+    }
+
     static int ciaOpToYarp(int op)
     {
         using namespace yarp::dev;
@@ -1569,6 +1720,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         yError("%s: failed to read gear ratios", Impl::kClassName.data());
         return false;
     }
+    if (!m_impl->readMotorConstants())
+    {
+        yError("%s: failed to read motor constants", Impl::kClassName.data());
+        return false;
+    }
     if (!m_impl->readTorqueValues())
     {
         yError("%s: failed to read torque values", Impl::kClassName.data());
@@ -1595,10 +1751,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->setPoints.resize(m_impl->numAxes);
     m_impl->setPoints.reset();
-    m_impl->controlModeState.resize(m_impl->numAxes, VOCAB_CM_IDLE);
+    m_impl->controlModeState.resize(m_impl->numAxes);
     m_impl->sm.resize(m_impl->numAxes);
     m_impl->velLatched.assign(m_impl->numAxes, false);
     m_impl->trqLatched.assign(m_impl->numAxes, false);
+    m_impl->currLatched.assign(m_impl->numAxes, false);
     m_impl->posLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppRefSpeedDegS.assign(m_impl->numAxes, 0.0);
@@ -1612,6 +1769,17 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     m_impl->fillJointNames();
+
+    constexpr double initialPositionVelocityDegs = 10;
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        // Cache for getRefSpeed()
+        {
+            std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+            m_impl->ppState.ppRefSpeedDegS[j] = initialPositionVelocityDegs;
+        }
+        m_impl->setSDORefSpeed(j, initialPositionVelocityDegs);
+    }
 
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
@@ -1671,7 +1839,7 @@ void CiA402MotionControl::run()
                 rx->OpMode = 0; // neutral
                 // Clear user setpoints/latches immediately
                 m_impl->setPoints.reset((int)j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
                 continue; // skip normal update-path this cycle
             }
 
@@ -1726,6 +1894,8 @@ void CiA402MotionControl::run()
         {
             const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
             auto tx = m_impl->ethercatManager.getTxView(slaveIdx);
+            bool flavourChanged = false;
+
             const bool hwInhibit = (tx.has(CiA402::TxField::STO_6621_01)
                                     && tx.get<uint8_t>(CiA402::TxField::STO_6621_01))
                                    || (tx.has(CiA402::TxField::SBC_6621_02)
@@ -1743,7 +1913,28 @@ void CiA402MotionControl::run()
                 newActive = VOCAB_CM_HW_FAULT;
             } else if (!hwInhibit && enabled)
             {
-                newActive = Impl::ciaOpToYarp(m_impl->sm[j]->getActiveOpMode());
+                const int activeOp = m_impl->sm[j]->getActiveOpMode();
+                // If the drive is in CST (10), reflect the user-facing label (CURRENT or TORQUE)
+                // that was last requested for this axis. Otherwise use the generic mapping.
+                if (activeOp == 10)
+                {
+                    // Guarded by the same mutex we already hold
+                    int flavor = m_impl->controlModeState.cstFlavor[j];
+                    // Safety net: constrain to CURRENT/TORQUE only
+                    if (flavor != VOCAB_CM_CURRENT && flavor != VOCAB_CM_TORQUE)
+                    {
+                        flavor = VOCAB_CM_TORQUE;
+                    }
+                    newActive = flavor;
+
+                    // detect if the CST flavor changed since last time
+                    flavourChanged
+                        = (flavor != m_impl->controlModeState.prevCstFlavor[j])
+                          || (m_impl->controlModeState.prevCstFlavor[j] == VOCAB_CM_UNKNOWN);
+                } else
+                {
+                    newActive = Impl::ciaOpToYarp(activeOp);
+                }
             }
 
             // If IDLE or FAULT or inhibited → clear SPs and latches; force target to IDLE on HW
@@ -1752,7 +1943,7 @@ void CiA402MotionControl::run()
                 || newActive == VOCAB_CM_FORCE_IDLE)
             {
                 m_impl->setPoints.reset(j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
                 if (hwInhibit)
                 {
                     m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
@@ -1760,14 +1951,16 @@ void CiA402MotionControl::run()
             }
 
             // Detect mode entry to (re)arm first-cycle latches
-            if (m_impl->controlModeState.active[j] != newActive)
+            if (m_impl->controlModeState.active[j] != newActive || flavourChanged)
             {
                 // entering a control mode: arm latches and clear "has SP" flags
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j]
+                    = m_impl->currLatched[j] = false;
                 m_impl->setPoints.reset(j);
             }
 
             m_impl->controlModeState.active[j] = newActive;
+            m_impl->controlModeState.prevCstFlavor[j] = m_impl->controlModeState.cstFlavor[j];
         }
     }
 }
@@ -2271,8 +2464,21 @@ bool CiA402MotionControl::setControlMode(const int j, const int mode)
         return false;
     }
 
+    if (mode == VOCAB_CM_POSITION_DIRECT)
+    {
+        yError("%s: control mode %d (POSITION_DIRECT) not supported",
+               Impl::kClassName.data(),
+               mode);
+        return false;
+    }
+
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     m_impl->controlModeState.target[j] = mode;
+    if (mode == VOCAB_CM_CURRENT || mode == VOCAB_CM_TORQUE)
+    {
+        m_impl->controlModeState.cstFlavor[j] = mode;
+    }
+
     return true;
 }
 
@@ -2289,6 +2495,18 @@ bool CiA402MotionControl::setControlModes(const int n, const int* joints, int* m
         return false;
     }
 
+    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
+    for (int k = 0; k < n; ++k)
+    {
+        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
+        {
+            yError("%s: control mode %d (POSITION_DIRECT) not supported",
+                   Impl::kClassName.data(),
+                   modes[k]);
+            return false;
+        }
+    }
+
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     for (int k = 0; k < n; ++k)
     {
@@ -2298,6 +2516,11 @@ bool CiA402MotionControl::setControlModes(const int n, const int* joints, int* m
             return false;
         }
         m_impl->controlModeState.target[joints[k]] = modes[k];
+
+        if (modes[k] == VOCAB_CM_CURRENT || modes[k] == VOCAB_CM_TORQUE)
+        {
+            m_impl->controlModeState.cstFlavor[joints[k]] = modes[k];
+        }
     }
     return true;
 }
@@ -2310,8 +2533,30 @@ bool CiA402MotionControl::setControlModes(int* modes)
         return false;
     }
 
+    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
+    for (int k = 0; k < m_impl->numAxes; ++k)
+    {
+        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
+        {
+            yError("%s: control mode %d (POSITION_DIRECT) not supported",
+                   Impl::kClassName.data(),
+                   modes[k]);
+            return false;
+        }
+    }
+
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     std::memcpy(m_impl->controlModeState.target.data(), modes, m_impl->numAxes * sizeof(int));
+
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        if (m_impl->controlModeState.target[j] == VOCAB_CM_CURRENT
+            || m_impl->controlModeState.target[j] == VOCAB_CM_TORQUE)
+        {
+            m_impl->controlModeState.cstFlavor[j] = m_impl->controlModeState.target[j];
+        }
+    }
+
     return true;
 }
 
@@ -3238,36 +3483,8 @@ bool CiA402MotionControl::setRefSpeed(int j, double spDegS)
         m_impl->ppState.ppRefSpeedDegS[j] = spDegS;
     }
 
-    // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
-    double shaft_deg_s = spDegS; // default assume joint shaft
-    switch (m_impl->velLoopSrc[j])
-    {
-    case Impl::SensorSrc::Enc1:
-        if (m_impl->enc1Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        else if (m_impl->enc1Mount[j] == Impl::Mount::Joint)
-            shaft_deg_s = spDegS;
-        break;
-    case Impl::SensorSrc::Enc2:
-        if (m_impl->enc2Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        else if (m_impl->enc2Mount[j] == Impl::Mount::Joint)
-            shaft_deg_s = spDegS;
-        break;
-    case Impl::SensorSrc::Unknown:
-    default:
-        // Fallback: if we know which encoder is motor-mounted, assume that one; otherwise leave as
-        // joint.
-        if (m_impl->enc1Mount[j] == Impl::Mount::Motor
-            || m_impl->enc2Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        break;
-    }
+    m_impl->setSDORefSpeed(j, spDegS);
 
-    // Convert deg/s on the loop shaft -> device velocity units using 0x60A9
-    const int s = m_impl->firstSlave + j;
-    const int32_t vel = static_cast<int32_t>(std::llround(shaft_deg_s * m_impl->degSToVel[j]));
-    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
     return true;
 }
 
@@ -3455,6 +3672,202 @@ bool CiA402MotionControl::setGearboxRatio(int m, const double val)
     // The setGearboxRatio function is not implemented
     yError("%s: The setGearboxRatio function is not implemented", Impl::kClassName.data());
     return false;
+}
+
+bool CiA402MotionControl::getCurrent(int m, double* curr)
+{
+    if (curr == nullptr)
+    {
+        yError("%s: getCurrent: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getCurrent: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    *curr = m_impl->variables.motorCurrents[m];
+    return true;
+};
+
+bool CiA402MotionControl::getCurrents(double* currs)
+{
+    if (currs == nullptr)
+    {
+        yError("%s: getCurrents: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    std::memcpy(currs, m_impl->variables.motorCurrents.data(), m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getCurrentRange(int m, double* min, double* max)
+{
+    if (min == nullptr || max == nullptr)
+    {
+        yError("%s: getCurrentRange: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getCurrentRange: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    *min = -m_impl->maxCurrentsA[m];
+    *max = m_impl->maxCurrentsA[m];
+    return true;
+}
+
+bool CiA402MotionControl::getCurrentRanges(double* min, double* max)
+{
+    if (min == nullptr || max == nullptr)
+    {
+        yError("%s: getCurrentRanges: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    for (size_t m = 0; m < m_impl->numAxes; ++m)
+    {
+        min[m] = -m_impl->maxCurrentsA[m];
+        max[m] = m_impl->maxCurrentsA[m];
+    }
+    return true;
+}
+
+bool CiA402MotionControl::setRefCurrents(const double* currs)
+{
+    if (currs == nullptr)
+    {
+        yError("%s: setRefCurrents: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    {
+        // check that all the joints are in CURRENT mode
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            if (m_impl->controlModeState.active[j] != VOCAB_CM_CURRENT)
+            {
+                yError("%s: setRefCurrents rejected: CURRENT mode is not active for the joint "
+                       "%zu",
+                       Impl::kClassName.data(),
+                       j);
+                return false; // reject
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(m_impl->setPoints.motorCurrents.data(), currs, m_impl->numAxes * sizeof(double));
+    std::fill(m_impl->setPoints.hasCurrentSP.begin(), m_impl->setPoints.hasCurrentSP.end(), true);
+    return true;
+}
+
+bool CiA402MotionControl::setRefCurrent(int m, double curr)
+{
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: setRefCurrent: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+
+    // (a/b) Only accept if CURRENT is ACTIVE; otherwise reject (not considered)
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        if (m_impl->controlModeState.active[m] != VOCAB_CM_CURRENT)
+        {
+            yError("%s: setRefCurrent rejected: CURRENT mode is not active for the joint %d",
+                   Impl::kClassName.data(),
+                   m);
+            return false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    m_impl->setPoints.motorCurrents[m] = curr;
+    m_impl->setPoints.hasCurrentSP[m] = true; // (b)
+
+    return true;
+}
+
+bool CiA402MotionControl::setRefCurrents(const int n_motor, const int* motors, const double* currs)
+{
+    if (currs == nullptr || motors == nullptr)
+    {
+        yError("%s: setRefCurrents: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_motor <= 0)
+    {
+        yError("%s: setRefCurrents: invalid number of motors %d", Impl::kClassName.data(), n_motor);
+        return false;
+    }
+    for (int k = 0; k < n_motor; ++k)
+    {
+        if (motors[k] < 0 || motors[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yError("%s: setRefCurrents: motor %d out of range", Impl::kClassName.data(), motors[k]);
+            return false;
+        }
+    }
+
+    // check that all the joints are in CURRENT mode
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n_motor; ++k)
+        {
+            if (m_impl->controlModeState.active[motors[k]] != VOCAB_CM_CURRENT)
+            {
+                yError("%s: setRefCurrents rejected: CURRENT mode is not active for the joint %d",
+                       Impl::kClassName.data(),
+                       motors[k]);
+                return false; // reject
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n_motor; ++k)
+    {
+        m_impl->setPoints.motorCurrents[motors[k]] = currs[k];
+        m_impl->setPoints.hasCurrentSP[motors[k]] = true;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::getRefCurrents(double* currs)
+{
+    if (currs == nullptr)
+    {
+        yError("%s: getRefCurrents: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(currs, m_impl->setPoints.motorCurrents.data(), m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getRefCurrent(int m, double* curr)
+{
+    if (curr == nullptr)
+    {
+        yError("%s: getRefCurrent: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getRefCurrent: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    *curr = m_impl->setPoints.motorCurrents[m];
+    return true;
 }
 
 } // namespace yarp::dev
