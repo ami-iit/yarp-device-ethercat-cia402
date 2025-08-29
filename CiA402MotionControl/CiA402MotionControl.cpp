@@ -621,6 +621,40 @@ struct CiA402MotionControl::Impl
         return true;
     }
 
+    void setSDORefSpeed(int j, double spDegS)
+    {
+        // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
+        double shaft_deg_s = spDegS; // default assume joint shaft
+        switch (this->velLoopSrc[j])
+        {
+        case Impl::SensorSrc::Enc1:
+            if (this->enc1Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            else if (this->enc1Mount[j] == Impl::Mount::Joint)
+                shaft_deg_s = spDegS;
+            break;
+        case Impl::SensorSrc::Enc2:
+            if (this->enc2Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            else if (this->enc2Mount[j] == Impl::Mount::Joint)
+                shaft_deg_s = spDegS;
+            break;
+        case Impl::SensorSrc::Unknown:
+        default:
+            // Fallback: if we know which encoder is motor-mounted, assume that one; otherwise leave
+            // as joint.
+            if (this->enc1Mount[j] == Impl::Mount::Motor
+                || this->enc2Mount[j] == Impl::Mount::Motor)
+                shaft_deg_s = spDegS * this->gearRatio[j];
+            break;
+        }
+
+        // Convert deg/s on the loop shaft -> device velocity units using 0x60A9
+        const int s = this->firstSlave + j;
+        const int32_t vel = static_cast<int32_t>(std::llround(shaft_deg_s * this->degSToVel[j]));
+        (void)this->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
+    }
+
     bool setSetPoints()
     {
         std::lock_guard<std::mutex> lock(this->setPoints.mutex);
@@ -636,6 +670,11 @@ struct CiA402MotionControl::Impl
             const int s = firstSlave + int(j);
             auto rx = this->ethercatManager.getRxPDO(s);
             const int opMode = this->controlModeState.active[j];
+
+            // clean rx targets
+            rx->TargetPosition = 0;
+            rx->TargetTorque = 0;
+            rx->TargetVelocity = 0;
 
             // ---------- TORQUE (CST) ----------
             if (opMode == VOCAB_CM_TORQUE)
@@ -1690,6 +1729,17 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 
     m_impl->fillJointNames();
 
+    constexpr double initialPositionVelocityDegs = 10;
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        // Cache for getRefSpeed()
+        {
+            std::lock_guard<std::mutex> lock(m_impl->ppState.mutex);
+            m_impl->ppState.ppRefSpeedDegS[j] = initialPositionVelocityDegs;
+        }
+        m_impl->setSDORefSpeed(j, initialPositionVelocityDegs);
+    }
+
     yInfo("%s: opened %zu axes. Initialization complete.",
           Impl::kClassName.data(),
           m_impl->numAxes);
@@ -2372,6 +2422,14 @@ bool CiA402MotionControl::setControlMode(const int j, const int mode)
         return false;
     }
 
+    if (mode == VOCAB_CM_POSITION_DIRECT)
+    {
+        yError("%s: control mode %d (POSITION_DIRECT) not supported",
+               Impl::kClassName.data(),
+               mode);
+        return false;
+    }
+
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     m_impl->controlModeState.target[j] = mode;
     if (mode == VOCAB_CM_CURRENT || mode == VOCAB_CM_TORQUE)
@@ -2393,6 +2451,18 @@ bool CiA402MotionControl::setControlModes(const int n, const int* joints, int* m
     {
         yError("%s: invalid number of joints %d", Impl::kClassName.data(), n);
         return false;
+    }
+
+    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
+    for (int k = 0; k < n; ++k)
+    {
+        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
+        {
+            yError("%s: control mode %d (POSITION_DIRECT) not supported",
+                   Impl::kClassName.data(),
+                   modes[k]);
+            return false;
+        }
     }
 
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
@@ -2419,6 +2489,18 @@ bool CiA402MotionControl::setControlModes(int* modes)
     {
         yError("%s: null pointer", Impl::kClassName.data());
         return false;
+    }
+
+    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
+    for (int k = 0; k < m_impl->numAxes; ++k)
+    {
+        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
+        {
+            yError("%s: control mode %d (POSITION_DIRECT) not supported",
+                   Impl::kClassName.data(),
+                   modes[k]);
+            return false;
+        }
     }
 
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
@@ -3359,36 +3441,8 @@ bool CiA402MotionControl::setRefSpeed(int j, double spDegS)
         m_impl->ppState.ppRefSpeedDegS[j] = spDegS;
     }
 
-    // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
-    double shaft_deg_s = spDegS; // default assume joint shaft
-    switch (m_impl->velLoopSrc[j])
-    {
-    case Impl::SensorSrc::Enc1:
-        if (m_impl->enc1Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        else if (m_impl->enc1Mount[j] == Impl::Mount::Joint)
-            shaft_deg_s = spDegS;
-        break;
-    case Impl::SensorSrc::Enc2:
-        if (m_impl->enc2Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        else if (m_impl->enc2Mount[j] == Impl::Mount::Joint)
-            shaft_deg_s = spDegS;
-        break;
-    case Impl::SensorSrc::Unknown:
-    default:
-        // Fallback: if we know which encoder is motor-mounted, assume that one; otherwise leave as
-        // joint.
-        if (m_impl->enc1Mount[j] == Impl::Mount::Motor
-            || m_impl->enc2Mount[j] == Impl::Mount::Motor)
-            shaft_deg_s = spDegS * m_impl->gearRatio[j];
-        break;
-    }
+    m_impl->setSDORefSpeed(j, spDegS);
 
-    // Convert deg/s on the loop shaft -> device velocity units using 0x60A9
-    const int s = m_impl->firstSlave + j;
-    const int32_t vel = static_cast<int32_t>(std::llround(shaft_deg_s * m_impl->degSToVel[j]));
-    (void)m_impl->ethercatManager.writeSDO<int32_t>(s, 0x6081, 0x00, vel);
     return true;
 }
 

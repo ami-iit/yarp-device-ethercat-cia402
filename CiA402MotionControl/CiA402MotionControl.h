@@ -938,22 +938,119 @@ public:
     bool getTargetPositions(const int n_joint, const int* joints, double* refs) override;
 
     // ---------------- ICurrentControl --------------
+    /**
+     * @brief Gets the measured current of a specific motor.
+     *
+     * Retrieves the instantaneous motor current as reported by the drive
+     * (typically q‑axis current or equivalent depending on vendor).
+     *
+     * @param m Index of the motor (0-based).
+     * @param curr Pointer to store the measured current (Amperes).
+     * @return true if the value was successfully read, false otherwise.
+     *
+     * @note Units are Amperes (A). Sign follows the drive convention.
+     * @note Value is measured, not the commanded reference.
+     */
     bool getCurrent(int m, double* curr) override;
 
+    /**
+     * @brief Gets the measured currents of all motors.
+     *
+     * @param currs Array to store the measured currents for all motors (A).
+     *              Size must equal the number of motors/axes.
+     * @return true if all values were successfully read, false otherwise.
+     */
     bool getCurrents(double* currs) override;
 
+    /**
+     * @brief Gets the allowable current range for a specific motor.
+     *
+     * Returns the minimum and maximum current the drive will accept or report
+     * for this motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param min Pointer to store the minimum allowable current (A).
+     * @param max Pointer to store the maximum allowable current (A).
+     * @return true if the range was successfully read, false otherwise.
+     *
+     * @note Ranges may reflect rated/peak limits configured on the drive.
+     */
     bool getCurrentRange(int m, double* min, double* max) override;
 
+    /**
+     * @brief Gets the allowable current ranges for all motors.
+     *
+     * @param min Array to store the minimum allowable currents (A).
+     * @param max Array to store the maximum allowable currents (A).
+     *            Arrays must have size equal to the number of motors/axes.
+     * @return true if all ranges were successfully read, false otherwise.
+     */
     bool getCurrentRanges(double* min, double* max) override;
 
+    /**
+     * @brief Sets the reference currents for all motors.
+     *
+     * Commands current references for all motors in one call. Values outside
+     * the allowable range may be saturated by the driver or rejected by the drive.
+     *
+     * @param currs Array of reference currents for all motors (A).
+     *              Size must equal the number of motors/axes.
+     * @return true if all references were successfully applied, false otherwise.
+     *
+     * @note Effective only when the underlying operation mode accepts current
+     *       commands (e.g., current/torque-related modes as configured).
+     */
     bool setRefCurrents(const double* currs) override;
 
+    /**
+     * @brief Sets the reference current for a specific motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param curr Reference current to command (A).
+     * @return true if the reference was successfully applied, false otherwise.
+     *
+     * @note The command may be clamped to the motor's allowable current range.
+     * @note Effective only when the configured mode accepts current commands.
+     */
     bool setRefCurrent(int m, double curr) override;
 
+    /**
+     * @brief Sets the reference currents for a subset of motors.
+     *
+     * Allows updating a selected set of motors while leaving others unchanged.
+     *
+     * @param n_motor Number of motors to command (must be > 0).
+     * @param motors Array of motor indices to command (each must be valid index).
+     * @param currs Array of reference currents (A) corresponding to the specified motors.
+     * @return true if all references were successfully applied, false otherwise.
+     *
+     * @note motors and currs must have n_motor elements.
+     * @note Values may be clamped to each motor's allowable range.
+     */
     bool setRefCurrents(const int n_motor, const int* motors, const double* currs) override;
 
+    /**
+     * @brief Gets the last commanded reference currents for all motors.
+     *
+     * Returns the references previously set with setRefCurrent(s). These are
+     * the commanded values, not the measured currents.
+     *
+     * @param currs Array to store the reference currents for all motors (A).
+     *              Size must equal the number of motors/axes.
+     * @return true if all values were retrieved, false otherwise.
+     */
     bool getRefCurrents(double* currs) override;
 
+    /**
+     * @brief Gets the last commanded reference current for a specific motor.
+     *
+     * Returns the reference previously set with setRefCurrent(s) for the given
+     * motor. This is the commanded value, not the measured current.
+     *
+     * @param m Index of the motor (0-based).
+     * @param curr Pointer to store the reference current (A).
+     * @return true if the value was retrieved, false otherwise.
+     */
     bool getRefCurrent(int m, double* curr) override;
     // ---------------- IMotor --------------
 
