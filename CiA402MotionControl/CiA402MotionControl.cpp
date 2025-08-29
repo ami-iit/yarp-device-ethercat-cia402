@@ -114,6 +114,7 @@ struct CiA402MotionControl::Impl
         std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
         std::vector<bool> targetReached; // cached Statusword bit 10
+        std::vector<double> driveTemperatures; // cached drive temperature if available
 
         void resizeContainers(std::size_t numAxes)
         {
@@ -130,6 +131,7 @@ struct CiA402MotionControl::Impl
             this->STO.resize(numAxes);
             this->SBC.resize(numAxes);
             this->targetReached.resize(numAxes);
+            this->driveTemperatures.resize(numAxes);
         }
     };
 
@@ -986,6 +988,12 @@ struct CiA402MotionControl::Impl
                 = tx.has(CiA402::TxField::Timestamp20F0)
                       ? double(tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0))
                             * MICROSECONDS_TO_SECONDS
+                      : 0.0;
+
+            // the temperature is given in mC we need to convert Celsius
+            this->variables.driveTemperatures[j]
+                = tx.has(CiA402::TxField::TemperatureDrive)
+                      ? double(tx.get<int32_t>(CiA402::TxField::TemperatureDrive, 0)) * 1e-3
                       : 0.0;
         }
         return true;
@@ -3491,15 +3499,81 @@ bool CiA402MotionControl::getTargetPositions(const int n, const int* joints, dou
     return true;
 }
 
-bool CiA402MotionControl::getNumberOfMotors(int* ax)
+bool CiA402MotionControl::getNumberOfMotors(int* num)
 {
-    if (ax == nullptr)
+    if (!num)
     {
         yError("%s: getNumberOfMotors: null pointer", Impl::kClassName.data());
         return false;
     }
-    *ax = static_cast<int>(m_impl->numAxes);
+    *num = m_impl->numAxes;
     return true;
+}
+
+bool CiA402MotionControl::getTemperature(int m, double* val)
+{
+    if (val == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    *val = m_impl->variables.driveTemperatures[m];
+    return true;
+}
+
+bool CiA402MotionControl::getTemperatures(double* vals)
+{
+    if (vals == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->variables.mutex);
+    std::memcpy(vals, m_impl->variables.driveTemperatures.data(), m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getTemperatureLimit(int m, double* temp)
+{
+    // The get temperature limit function is not implemented
+    yError("%s: The getTemperatureLimit function is not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool CiA402MotionControl::setTemperatureLimit(int m, const double temp)
+{
+    // The set temperature limit function is not implemented
+    yError("%s: The setTemperatureLimit function is not implemented", Impl::kClassName.data());
+    return false;
+}
+
+bool CiA402MotionControl::getGearboxRatio(int m, double* val)
+{
+    if (val == nullptr)
+    {
+        yError("%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (m < 0 || m >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: motor %d out of range", Impl::kClassName.data(), m);
+        return false;
+    }
+    *val = m_impl->gearRatio[m];
+    return true;
+}
+
+bool CiA402MotionControl::setGearboxRatio(int m, const double val)
+{
+    // The setGearboxRatio function is not implemented
+    yError("%s: The setGearboxRatio function is not implemented", Impl::kClassName.data());
+    return false;
 }
 
 bool CiA402MotionControl::getCurrent(int m, double* curr)
