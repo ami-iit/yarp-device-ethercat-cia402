@@ -50,7 +50,7 @@ export YARP_DATA_DIRS=/path/to/install:$YARP_DATA_DIRS
 ```
 
 ### Configuration ⚙️
-The plugin requires a configuration file defining the EtherCAT network and device parameters. An example can be found at: [`config/robot/template/config.xml`](config/robot/template/config.xml)
+The plugin requires a configuration file defining the EtherCAT network and device parameters. An example can be found at: [`config/robot/template_1_motor/config.xml`](config/robot/template_1_motor/config.xml)
 
 ### Setting Up `yarprobotinterface` 🛠️
 To ensure that the `yarprobotinterface` binary has the correct permissions and can locate its dependencies, execute:
