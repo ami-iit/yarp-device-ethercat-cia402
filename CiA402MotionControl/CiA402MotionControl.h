@@ -12,6 +12,7 @@
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IJointFault.h>
+#include <yarp/dev/IMotor.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/IPositionControl.h>
 #include <yarp/dev/ITorqueControl.h>
@@ -37,7 +38,8 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::ITorqueControl,
                             public yarp::dev::IVelocityControl,
                             public yarp::dev::IPositionControl,
-                            public yarp::dev::IJointFault
+                            public yarp::dev::IJointFault,
+                            public yarp::dev::IMotor
 {
 public:
     /**
@@ -932,6 +934,87 @@ public:
      * @note This function does not read the actual current positions.
      */
     bool getTargetPositions(const int n_joint, const int* joints, double* refs) override;
+
+    // ---------------- IMotor --------------
+
+    /**
+     * @brief Gets the number of motors controlled by the device.
+     *
+     * This function retrieves the number of motors that are currently
+     * controlled by the device.
+     *
+     * @param num Pointer to store the number of motors.
+     * @return true if the parameter was successfully read, false otherwise.
+     */
+    bool getNumberOfMotors(int* num) override;
+
+    /**
+     * @brief Gets the temperature of a specific motor.
+     *
+     * This function retrieves the current temperature of the specified motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param val Pointer to store the temperature value.
+     * @return true if the parameter was successfully read, false otherwise.
+     */
+    bool getTemperature(int m, double* val) override;
+
+    /**
+     * @brief Gets the temperatures of all motors.
+     *
+     * This function retrieves the current temperatures of all motors.
+     *
+     * @param vals Array to store the temperature values (size must equal number of motors).
+     * @return true if all parameters were successfully read, false otherwise.
+     */
+    bool getTemperatures(double* vals) override;
+
+    /**
+     * @brief Gets the temperature limit of a specific motor.
+     *
+     * This function retrieves the temperature limit of the specified motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param temp Pointer to store the temperature limit value.
+     * @return true if the parameter was successfully read, false otherwise.
+     * @note This function is not implemented so it always returns false.
+     */
+    bool getTemperatureLimit(int m, double* temp) override;
+
+    /**
+     * @brief Sets the temperature limit of a specific motor.
+     *
+     * This function sets the temperature limit of the specified motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param temp Temperature limit value to set.
+     * @return true if the parameter was successfully set, false otherwise.
+     * @note This function is not implemented so it always returns false.
+     */
+    bool setTemperatureLimit(int m, const double temp) override;
+
+    /**
+     * @brief Gets the gearbox ratio of a specific motor.
+     *
+     * This function retrieves the gearbox ratio of the specified motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param val Pointer to store the gearbox ratio value.
+     * @return true if the parameter was successfully read, false otherwise.
+     */
+    bool getGearboxRatio(int m, double* val) override;
+
+    /**
+     * @brief Sets the gearbox ratio of a specific motor.
+     *
+     * This function sets the gearbox ratio of the specified motor.
+     *
+     * @param m Index of the motor (0-based).
+     * @param val Gearbox ratio value to set.
+     * @return true if the parameter was successfully set, false otherwise.
+     * @note This function is not implemented so it always returns false.
+     */
+    bool setGearboxRatio(int m, const double val) override;
 
 private:
     struct Impl;
