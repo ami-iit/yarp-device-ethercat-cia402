@@ -3791,7 +3791,7 @@ bool CiA402MotionControl::setRefCurrent(int m, double curr)
     m_impl->setPoints.motorCurrents[m] = curr;
     m_impl->setPoints.hasCurrentSP[m] = true; // (b)
 
-    return false;
+    return true;
 }
 
 bool CiA402MotionControl::setRefCurrents(const int n_motor, const int* motors, const double* currs)
