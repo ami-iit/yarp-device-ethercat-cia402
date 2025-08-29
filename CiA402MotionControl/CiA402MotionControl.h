@@ -10,6 +10,7 @@
 #include <yarp/dev/DeviceDriver.h>
 #include <yarp/dev/IAxisInfo.h>
 #include <yarp/dev/IControlMode.h>
+#include <yarp/dev/ICurrentControl.h>
 #include <yarp/dev/IEncodersTimed.h>
 #include <yarp/dev/IJointFault.h>
 #include <yarp/dev/IMotorEncoders.h>
@@ -37,6 +38,7 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::ITorqueControl,
                             public yarp::dev::IVelocityControl,
                             public yarp::dev::IPositionControl,
+                            public yarp::dev::ICurrentControl,
                             public yarp::dev::IJointFault
 {
 public:
@@ -932,6 +934,27 @@ public:
      * @note This function does not read the actual current positions.
      */
     bool getTargetPositions(const int n_joint, const int* joints, double* refs) override;
+
+    // ---------------- ICurrentControl --------------
+    bool getNumberOfMotors(int* ax) override;
+
+    bool getCurrent(int m, double* curr) override;
+
+    bool getCurrents(double* currs) override;
+
+    bool getCurrentRange(int m, double* min, double* max) override;
+
+    bool getCurrentRanges(double* min, double* max) override;
+
+    bool setRefCurrents(const double* currs) override;
+
+    bool setRefCurrent(int m, double curr) override;
+
+    bool setRefCurrents(const int n_motor, const int* motors, const double* currs) override;
+
+    bool getRefCurrents(double* currs) override;
+
+    bool getRefCurrent(int m, double* curr) override;
 
 private:
     struct Impl;
