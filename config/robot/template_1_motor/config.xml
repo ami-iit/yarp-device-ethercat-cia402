@@ -5,8 +5,7 @@ BSD-3-Clause license. -->
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE robot PUBLIC "-//YARP//DTD yarprobotinterface 3.0//EN" "http://www.yarp.it/DTD/yarprobotinterfaceV3.0.dtd">
 
-<robot name="adj8" portprefix="ethercat" build="1" xmlns:xi="http://www.w3.org/2001/XInclude">
+<robot name="template_1_motor" portprefix="ethercat" build="1" xmlns:xi="http://www.w3.org/2001/XInclude">
     <xi:include href="./motion_control/all_joint_mc.xml" />
     <xi:include href="./motion_control/all_joint_mc_nws.xml" />
-
 </robot>

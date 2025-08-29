@@ -4,7 +4,7 @@ BSD-3-Clause license. -->
 <?xml version="1.0" encoding="UTF-8"?>
 <device xmlns:xi="http://www.w3.org/2001/XInclude" name="all_joints_mc_nws_yarp" type="controlBoard_nws_yarp">
     <param name="period"> 0.001  </param>
-    <param name="name"> /adj8/motor </param>
+    <param name="name"> /template/motor </param>
     <action phase="startup" level="10" type="attach">
         <param name="device"> all_joints_mc </param>
     </action>

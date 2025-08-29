@@ -50,7 +50,7 @@ export YARP_DATA_DIRS=/path/to/install:$YARP_DATA_DIRS
 ```
 
 ### Configuration ⚙️
-The plugin requires a configuration file defining the EtherCAT network and device parameters. An example can be found at: [`config/robot/adj8/config.xml`](config/robot/adj8/config.xml)
+The plugin requires a configuration file defining the EtherCAT network and device parameters. An example can be found at: [`config/robot/template/config.xml`](config/robot/template/config.xml)
 
 ### Setting Up `yarprobotinterface` 🛠️
 To ensure that the `yarprobotinterface` binary has the correct permissions and can locate its dependencies, execute:
@@ -71,10 +71,12 @@ This plugin has been primarily tested with Synapticon drives. While it may be co
 
 If you're looking to adapt the plugin for different hardware, we encourage you to open an issue or contribute improvements.
 
-### Note on PDO Mapping 📝
-The plugin includes a custom mapping of the **Safe Torque Off (STO)** and **Safe Brake Control (SBC)** signals into PDOs. This design choice enables the EtherCAT master to access real-time data on these critical safety features, enhancing runtime monitoring and safety state management.
+### Additional notes 📝
+For more details, see:
+- Protocol map — PDOs, SDOs, and conversion formulas: [doc/protocol_map.md](./doc/protocol_map.md)
+- Modes and setpoints — available control modes and targets: [doc/modes_and_setpoints.md](./doc/modes_and_setpoints.md)
+- Dual encoder handling — mounts, sources, and transformations: [doc/dual_encoder_handling.md](./doc/dual_encoder_handling.md)
 
-Although this approach diverges from strict CiA402 compliance, it brings practical advantages: improved fault detection, smoother safety transitions, and more robust motion control. The mapping is handled by the `configurePDOMapping` method in the `EthercatManager` class, ensuring that STO and SBC statuses are continuously updated and readily available for real-time decision-making.
 
 ## License 📜
 This project is licensed under the BSD-3-Clause License. See the [`LICENSE`](LICENSE) file for details.
