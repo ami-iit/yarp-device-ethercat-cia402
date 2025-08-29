@@ -532,6 +532,13 @@ struct CiA402MotionControl::Impl
                 maxPermille = 1000;
             }
 
+            yDebug("%s: Joint %zu: max current %u ‰ → %f A. Torque constant %f Nm/A",
+                    kClassName.data(),
+                    j,
+                    maxPermille,
+                    (double(maxPermille) / 1000.0) * ratedCurrentA,
+                    this->torqueConstants[j]);
+
             maxCurrentsA[j] = (double(maxPermille) / 1000.0) * ratedCurrentA;
         }
         return true;
@@ -816,13 +823,16 @@ struct CiA402MotionControl::Impl
                     this->currLatched[j] = true;
                 } else
                 {
-                    // YARP gives joint torque [Nm] → convert to MOTOR torque before 0x6071
+                    // YARP gives Currents [A] → convert to MOTOR torque before 0x6071
                     const double currentA = setPoints.hasCurrentSP[j] ? setPoints.motorCurrents[j]
                                                                       : 0.0;
 
+                    // convert the current in torque using the torque constant
+                    const double torqueNm = currentA * this->torqueConstants[j];
+
                     // 0x6071 is per-thousand of rated MOTOR torque (0x6076 in Nm)
                     const int16_t tq_thousand = static_cast<int16_t>(std::llround(
-                        (ratedMotorTorqueNm[j] != 0.0 ? currentA / ratedMotorTorqueNm[j] : 0.0)
+                        (ratedMotorTorqueNm[j] != 0.0 ? torqueNm / ratedMotorTorqueNm[j] : 0.0)
                         * 1000.0));
                     rx->TargetTorque = tq_thousand;
                 }
