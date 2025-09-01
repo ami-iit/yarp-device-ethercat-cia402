@@ -39,7 +39,7 @@ EthercatManager::~EthercatManager()
         m_watchThread.join();
     }
 
-    // disable the syncronized clock
+    // disable the synchronized clock
     this->disableDCSync0();
 
     // Close only if port was opened
