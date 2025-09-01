@@ -1548,8 +1548,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // Enable Distributed Clocks (SYNC0 only) with cycle = thread period
-    const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9)); // e.g.,
-                                                                                            // 1e6
+    // Convert it into nanoseconds
+    const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
     const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/0);
     if (dcErr != ::CiA402::EthercatManager::Error::NoError)
     {
