@@ -38,6 +38,10 @@ EthercatManager::~EthercatManager()
     {
         m_watchThread.join();
     }
+
+    // disable the synchronized clock
+    this->disableDCSync0();
+
     // Close only if port was opened
     if (m_portOpen)
     {
@@ -476,4 +480,38 @@ std::string EthercatManager::getName(int slaveIndex) const noexcept
 bool EthercatManager::indexValid(int slaveIndex) const noexcept
 {
     return slaveIndex >= 1 && slaveIndex <= m_ctx.slavecount;
+}
+
+EthercatManager::Error EthercatManager::enableDCSync0(uint32_t cycleNs, int32_t shiftNs) noexcept
+{
+    if (!m_initialized)
+    {
+        return Error::NotInitialized;
+    }
+
+    std::lock_guard<std::mutex> lk(m_ioMtx);
+
+    // Ensure DC is configured at bus level (you already call ecx_configdc in init)
+    // Now enable SYNC0 on each slave (SYNC1 disabled)
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
+    {
+        // ecx_dcsync0(ctx, slave, activate, CyclTime, ShiftTime)
+        // Master-mode behavior is handled by the master; slaves just emit SYNC0
+        ecx_dcsync0(&m_ctx, s, true, cycleNs, shiftNs);
+    }
+    return Error::NoError;
+}
+
+EthercatManager::Error EthercatManager::disableDCSync0() noexcept
+{
+    if (!m_initialized)
+    {
+        return Error::NotInitialized;
+    }
+    std::lock_guard<std::mutex> lk(m_ioMtx);
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
+    {
+        ecx_dcsync0(&m_ctx, s, false, 0, 0);
+    }
+    return Error::NoError;
 }

@@ -252,7 +252,26 @@ public:
     template <typename T>
     Error writeSDO(int slaveIndex, uint16_t idx, uint8_t subIdx, const T& value) noexcept;
 
+    /**
+     * @brief Get the name of a slave device.
+     * @param slaveIndex 1-based slave index.
+     * @return Slave name as a string.
+     */
     std::string getName(int slaveIndex) const noexcept;
+
+    /**
+     * @brief Enable DC Sync0 for a slave.
+     * @param cycleNs Sync cycle time in nanoseconds.
+     * @param shiftNs Sync phase shift in nanoseconds.
+     * @return Error::NoError on success; an error code otherwise.
+     */
+    Error enableDCSync0(uint32_t cycleNs, int32_t shiftNs = 0) noexcept;
+
+    /**
+     * @brief Disable DC Sync0 for a slave.
+     * @return Error::NoError on success; an error code otherwise.
+     */
+    Error disableDCSync0() noexcept;
 
 private:
     /** @brief Background error/AL status monitor loop. */

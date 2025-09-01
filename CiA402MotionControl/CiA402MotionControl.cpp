@@ -533,11 +533,11 @@ struct CiA402MotionControl::Impl
             }
 
             yDebug("%s: Joint %zu: max current %u ‰ → %f A. Torque constant %f Nm/A",
-                    kClassName.data(),
-                    j,
-                    maxPermille,
-                    (double(maxPermille) / 1000.0) * ratedCurrentA,
-                    this->torqueConstants[j]);
+                   kClassName.data(),
+                   j,
+                   maxPermille,
+                   (double(maxPermille) / 1000.0) * ratedCurrentA,
+                   this->torqueConstants[j]);
 
             maxCurrentsA[j] = (double(maxPermille) / 1000.0) * ratedCurrentA;
         }
@@ -1544,6 +1544,16 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     if (ecErr != ::CiA402::EthercatManager::Error::NoError)
     {
         yError("%s: EtherCAT init failed (%d)", Impl::kClassName.data(), static_cast<int>(ecErr));
+        return false;
+    }
+
+    // Enable Distributed Clocks (SYNC0 only) with cycle = thread period
+    // Convert it into nanoseconds
+    const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
+    const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/0);
+    if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+    {
+        yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
         return false;
     }
 
