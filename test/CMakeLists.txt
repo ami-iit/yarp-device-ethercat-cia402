@@ -1,10 +1,18 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.12)
+project(CiA402MotionControlTests)
 
 # Integration test application (original test) - requires YARP
-add_application(
-    NAME CiA402MotionControlTest
-    SOURCES main.cpp
-    LINK_LIBRARIES  ${YARP_LIBRARIES})
+# Only build if YARP is available (when building as part of main project)
+find_package(YARP QUIET)
+if(YARP_FOUND)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/AddApplication.cmake OPTIONAL)
+    if(COMMAND add_application)
+        add_application(
+            NAME CiA402MotionControlTest
+            SOURCES main.cpp
+            LINK_LIBRARIES  ${YARP_LIBRARIES})
+    endif()
+endif()
 
 # Catch2 unit tests - can build without YARP installation
 add_library(Catch2 STATIC 

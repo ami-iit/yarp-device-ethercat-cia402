@@ -1,2 +1,0 @@
-/usr/bin/ar qc libCatch2.a CMakeFiles/Catch2.dir/catch2/catch_amalgamated.cpp.o
-/usr/bin/ranlib libCatch2.a

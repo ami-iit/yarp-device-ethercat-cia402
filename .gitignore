@@ -14,5 +14,27 @@ tramp
 .build
 .pixi
 
+# Additional build directories
+*_build/
+test_build/
+
 # vscode
 .vscode
+
+# Test executables
+CiA402MotionControlUnitTests
+CiA402MotionControlTest
+
+# CMake generated files (outside of build dirs)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Libraries
+*.a
+*.so
+*.dylib
+
+# Test results
+Testing/

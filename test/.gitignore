@@ -1,6 +1,7 @@
 # Build directories
 build/
 *_build/
+test_build/
 
 # Test executables
 CiA402MotionControlUnitTests
