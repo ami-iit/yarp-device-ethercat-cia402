@@ -1,0 +1,5 @@
+/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CMakeFiles/Catch2.dir
+/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CMakeFiles/CiA402MotionControlUnitTests.dir
+/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CMakeFiles/test.dir
+/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CMakeFiles/edit_cache.dir
+/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CMakeFiles/rebuild_cache.dir

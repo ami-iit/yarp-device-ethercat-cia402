@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/CiA402MotionControlUnitTests.dir/link.d CMakeFiles/CiA402MotionControlUnitTests.dir/unit_tests/test_control_modes.cpp.o CMakeFiles/CiA402MotionControlUnitTests.dir/unit_tests/test_main.cpp.o -o CiA402MotionControlUnitTests  libCatch2.a

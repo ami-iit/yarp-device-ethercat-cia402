@@ -1,0 +1,27 @@
+# Build directories
+build/
+*_build/
+
+# Test executables
+CiA402MotionControlUnitTests
+CiA402MotionControlTest
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Libraries
+*.a
+*.so
+*.dylib
+
+# Test results
+Testing/
+
+# IDE files
+.vscode/
+.idea/
+*.user

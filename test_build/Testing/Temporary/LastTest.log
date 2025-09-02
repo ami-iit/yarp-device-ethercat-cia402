@@ -1,0 +1,22 @@
+Start testing: Sep 02 13:17 UTC
+----------------------------------------------------------
+1/1 Testing: CiA402_ControlModes
+1/1 Test: CiA402_ControlModes
+Command: "/home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build/CiA402MotionControlUnitTests"
+Directory: /home/runner/work/yarp-device-ethercat-cia402/yarp-device-ethercat-cia402/test_build
+"CiA402_ControlModes" start time: Sep 02 13:17 UTC
+Output:
+----------------------------------------------------------
+Randomness seeded to: 3146588577
+===============================================================================
+All tests passed (671 assertions in 6 test cases)
+
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"CiA402_ControlModes" end time: Sep 02 13:17 UTC
+"CiA402_ControlModes" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 02 13:17 UTC
