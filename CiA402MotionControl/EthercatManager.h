@@ -180,6 +180,16 @@ public:
         PdoExchangeFailed = -8, ///< Failed to exchange PDOs or read SDO.
     };
 
+    /**
+     * @brief Health status of a slave device.
+     */
+    enum class SlaveHealth : uint8_t
+    {
+        Ok = 0, ///< Slave is operational and healthy.
+        Degraded = 1, ///< Slave is operational but degraded.
+        Lost = 2 ///< Slave is not responding.
+    };
+
     /** @brief Construct the manager (no I/O started). */
     EthercatManager();
     /** @brief Destructor, stops background monitoring and releases resources. */
@@ -210,7 +220,15 @@ public:
     /**
      * @brief Last Working Counter (WKC) observed from the previous cycle.
      */
-    int getWorkingCounter() const noexcept
+    int getExpectedWkc() const noexcept
+    {
+        return m_expectedWkc;
+    }
+
+    /**
+     * @brief Last Working Counter (WKC) observed from the previous cycle.
+     */
+    int getLastWkc() const noexcept
     {
         return m_lastWkc;
     }
@@ -273,6 +291,13 @@ public:
      */
     Error disableDCSync0() noexcept;
 
+    /**
+     * @brief Get the health status of a slave.
+     * @param slaveIndex 1-based slave index.
+     * @return SlaveHealth enum indicating the health status.
+     */
+    SlaveHealth getSlaveHealth(int slaveIndex) const noexcept;
+
 private:
     /** @brief Background error/AL status monitor loop. */
     void errorMonitorLoop() noexcept;
@@ -306,6 +331,12 @@ private:
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
 
     mutable std::mutex m_ioMtx; ///< Protects IO/SDO accesses.
+
+    static constexpr int kMaxStateRetries = 50; // ~0.5s at 10ms monitor loop
+
+    mutable std::mutex m_healthMtx; ///< Protects health status data.
+    std::vector<int> m_notOpConsecutive; ///< Consecutive not-OP counts per slave.
+    std::vector<SlaveHealth> m_slaveHealth; ///< Health status per slave.
 
     static constexpr std::string_view m_kClassName = "EthercatManager"; // Class name for logging
 };
