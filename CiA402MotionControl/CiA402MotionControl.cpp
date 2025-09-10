@@ -1886,7 +1886,8 @@ void CiA402MotionControl::run()
      * ----------------------------------------------------------------*/
     if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
     {
-        yError("%s: sendReceive() failed", Impl::kClassName.data());
+        constexpr double kErrorThreadThrottle = 5.0; // seconds
+        yErrorThreadThrottle(kErrorThreadThrottle, "%s: sendReceive() failed", Impl::kClassName.data());
     }
 
     /* ------------------------------------------------------------------
@@ -1903,6 +1904,21 @@ void CiA402MotionControl::run()
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
             const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
+
+            if (m_impl->ethercatManager.getSlaveHealth(slaveIdx)
+                == ::CiA402::EthercatManager::SlaveHealth::Lost)
+            {
+                if (m_impl->controlModeState.active[j] != VOCAB_CM_HW_FAULT)
+                {
+                    yError("%s: joint %zu: marking HW_FAULT due to slave LOST",
+                           Impl::kClassName.data(),
+                           j);
+                }
+                m_impl->controlModeState.active[j] = VOCAB_CM_HW_FAULT;
+                m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
+                continue; // skip normal statusword-based mapping for this joint
+            }
+
             auto tx = m_impl->ethercatManager.getTxView(slaveIdx);
             bool flavourChanged = false;
 

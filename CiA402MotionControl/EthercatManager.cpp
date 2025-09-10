@@ -404,6 +404,13 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         m_txRaw[s - 1] = reinterpret_cast<uint8_t*>(m_ctx.slavelist[s].inputs);
     }
 
+    // --------- Initialize health monitoring data ----------
+    {
+        std::lock_guard<std::mutex> g(m_healthMtx);
+        m_notOpConsecutive.assign(m_ctx.slavecount, 0);
+        m_slaveHealth.assign(m_ctx.slavecount, SlaveHealth::Ok);
+    }
+
     // --------- Start background error monitoring ----------
     // Launch a background thread to continuously monitor slave states
     // and attempt recovery if any slave drops out of OPERATIONAL state
@@ -450,20 +457,42 @@ TxView EthercatManager::getTxView(int slaveIdx) const noexcept
 void EthercatManager::errorMonitorLoop() noexcept
 {
     using namespace std::chrono_literals;
-    while (m_runWatch.load())
+
+    while (m_runWatch.load(std::memory_order_relaxed))
     {
         {
-            std::lock_guard<std::mutex> lk(m_ioMtx);
+            std::lock_guard<std::mutex> ioLk(m_ioMtx);
             ecx_readstate(&m_ctx);
+
+            std::lock_guard<std::mutex> hLk(m_healthMtx);
+
             for (int s = 1; s <= m_ctx.slavecount; ++s)
             {
-                if (m_ctx.slavelist[s].state != EC_STATE_OPERATIONAL)
+                const bool inOp = (m_ctx.slavelist[s].state == EC_STATE_OPERATIONAL);
+
+                if (inOp)
                 {
-                    m_ctx.slavelist[s].state = EC_STATE_OPERATIONAL;
-                    ecx_writestate(&m_ctx, s);
+                    m_slaveHealth[s - 1] = SlaveHealth::Ok;
+                    m_notOpConsecutive[s - 1] = 0;
+                    continue;
                 }
+
+                // not OP → degrade and count
+                int tries = ++m_notOpConsecutive[s - 1];
+                if (tries > kMaxStateRetries)
+                {
+                    m_slaveHealth[s - 1] = SlaveHealth::Lost;
+                    continue; // stop trying
+                }
+
+                m_slaveHealth[s - 1] = SlaveHealth::Degraded;
+
+                // one gentle attempt to request OP (unchanged policy)
+                m_ctx.slavelist[s].state = EC_STATE_OPERATIONAL;
+                ecx_writestate(&m_ctx, s);
             }
         }
+
         std::this_thread::sleep_for(10ms);
     }
 }
@@ -514,4 +543,14 @@ EthercatManager::Error EthercatManager::disableDCSync0() noexcept
         ecx_dcsync0(&m_ctx, s, false, 0, 0);
     }
     return Error::NoError;
+}
+
+EthercatManager::SlaveHealth EthercatManager::getSlaveHealth(int slaveIndex) const noexcept
+{
+    if (!indexValid(slaveIndex))
+    {
+        return SlaveHealth::Lost;
+    }
+    std::lock_guard<std::mutex> g(m_healthMtx);
+    return m_slaveHealth[slaveIndex - 1];
 }
