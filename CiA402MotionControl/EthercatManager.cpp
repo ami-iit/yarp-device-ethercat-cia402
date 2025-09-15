@@ -427,8 +427,42 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
     // Perform cyclic process data exchange with thread safety
     std::lock_guard<std::mutex> lk(m_ioMtx);
     ecx_send_processdata(&m_ctx);
-    m_lastWkc = ecx_receive_processdata(&m_ctx, EC_TIMEOUTRET);
+    m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
+    if (m_lastWkc >= m_expectedWkc)
+        return Error::NoError;
+
+    // quick retry once: re-read state and try a short receive
+    ecx_readstate(&m_ctx);
+    m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
     return (m_lastWkc >= m_expectedWkc) ? Error::NoError : Error::PdoExchangeFailed;
+}
+
+void EthercatManager::dumpDiagnostics() noexcept
+{
+    std::lock_guard<std::mutex> lk(m_ioMtx);
+    yError("%s: WKC=%d expected=%d, slavecount=%d",
+           m_kClassName.data(),
+           m_lastWkc,
+           m_expectedWkc,
+           m_ctx.slavecount);
+
+    // Read current state from slaves
+    ecx_readstate(&m_ctx);
+    for (int s = 1; s <= m_ctx.slavecount; ++s)
+    {
+        const ec_slavet& sl = m_ctx.slavelist[s];
+        // SM2/SM3 are typically outputs/inputs
+        int sm2 = (EC_MAXSM > 3) ? sl.SM[2].StartAddr : -1;
+        int sm3 = (EC_MAXSM > 3) ? sl.SM[3].StartAddr : -1;
+        yError("%s: s%02d '%s' state=0x%02X AL=0x%04X SM2=0x%04X SM3=0x%04X",
+               m_kClassName.data(),
+               s,
+               sl.name,
+               sl.state,
+               sl.ALstatuscode,
+               sm2,
+               sm3);
+    }
 }
 
 const RxPDO* EthercatManager::getRxPDO(int slaveIdx) const noexcept

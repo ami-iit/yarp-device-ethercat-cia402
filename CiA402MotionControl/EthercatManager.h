@@ -221,6 +221,23 @@ public:
     }
 
     /**
+     * @brief Set receive timeout for PDO exchange (microseconds).
+     * Default is EC_TIMEOUTRET from SOEM. Larger values can help on busy systems.
+     */
+    void setPdoTimeoutUs(int usec) noexcept
+    {
+        m_pdoTimeoutUs = (usec > 0 ? usec : m_pdoTimeoutUs);
+    }
+
+    /**
+     * @brief Get current receive timeout for PDO exchange (microseconds).
+     */
+    int getPdoTimeoutUs() const noexcept
+    {
+        return m_pdoTimeoutUs;
+    }
+
+    /**
      * @brief Access the RxPDO (master→slave) buffer for a given slave.
      * @note Pointer remains valid until re-initialization.
      */
@@ -278,6 +295,12 @@ public:
      */
     Error disableDCSync0() noexcept;
 
+    /**
+     * @brief Print quick diagnostics about bus/slave state and WKC.
+     * Call this when a PDO exchange fails to get immediate hints.
+     */
+    void dumpDiagnostics() noexcept;
+
 private:
     /** @brief Background error/AL status monitor loop. */
     void errorMonitorLoop() noexcept;
@@ -309,6 +332,7 @@ private:
     int m_lastWkc{0}; ///< Last working counter.
     int m_expectedWkc{0}; ///< Expected working counter.
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
+    int m_pdoTimeoutUs{EC_TIMEOUTRET}; ///< Receive timeout for process data.
 
     mutable std::mutex m_ioMtx; ///< Protects IO/SDO accesses.
 

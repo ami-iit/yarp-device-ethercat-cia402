@@ -1534,6 +1534,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     const std::string ifname = cfg.find("ifname").asString();
+    // Optional runtime knobs
+    const int pdoTimeoutUs = cfg.check("pdo_timeout_us") ? cfg.find("pdo_timeout_us").asInt32()
+                                                          : -1;
+    const bool enableDc = cfg.check("enable_dc") ? cfg.find("enable_dc").asBool() : true;
+    const int dcShiftNs = cfg.check("dc_shift_ns") ? cfg.find("dc_shift_ns").asInt32() : 0;
     yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
 
     // ---------------------------------------------------------------------
@@ -1547,14 +1552,28 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
+    if (pdoTimeoutUs > 0)
+    {
+        m_impl->ethercatManager.setPdoTimeoutUs(pdoTimeoutUs);
+        yInfo("%s: PDO receive timeout set to %d us",
+              Impl::kClassName.data(),
+              m_impl->ethercatManager.getPdoTimeoutUs());
+    }
+
     // Enable Distributed Clocks (SYNC0 only) with cycle = thread period
     // Convert it into nanoseconds
     const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
-    const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/0);
-    if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+    if (enableDc)
     {
-        yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
-        return false;
+        const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/dcShiftNs);
+        if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
+            return false;
+        }
+    } else
+    {
+        yWarning("%s: DC has been disabled by configuration", Impl::kClassName.data());
     }
 
     // =========================================================================
@@ -1890,6 +1909,7 @@ void CiA402MotionControl::run()
                Impl::kClassName.data(),
                m_impl->ethercatManager.getExpectedWorkingCounter(),
                m_impl->ethercatManager.getWorkingCounter());
+        m_impl->ethercatManager.dumpDiagnostics();
     }
 
     /* ------------------------------------------------------------------
