@@ -1292,7 +1292,7 @@ CiA402MotionControl::~CiA402MotionControl() = default;
 bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 {
     // ---------------------------------------------------------------------
-    // 0. Parse YARP parameters
+    // Parse driver parameters
     // ---------------------------------------------------------------------
     if (!cfg.check("ifname") || !cfg.find("ifname").isString())
     {
@@ -1555,7 +1555,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
 
     // ---------------------------------------------------------------------
-    // 1. Initialise the EtherCAT network via the high‑level manager
+    // Initialize the EtherCAT manager (ring in SAFE‑OP)
     // ---------------------------------------------------------------------
 
     const auto ecErr = m_impl->ethercatManager.init(ifname);
@@ -1713,7 +1713,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 2. Fetch static SDO parameters (encoder resolutions, gear ratios)
+    // Read static SDO parameters (encoders, velocity units, gear ratios, motor limits)
     // ---------------------------------------------------------------------
     if (!m_impl->readEncoderResolutions())
     {
@@ -1742,7 +1742,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 3. Idle every drive (switch‑on disabled, no mode selected)
+    // Idle all drives (switch‑on disabled, no mode selected)
     // ---------------------------------------------------------------------
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
@@ -1765,7 +1765,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 4. Configure position windows (for positionReached)
+    // Configure position windows (targetReached thresholds)
     // ---------------------------------------------------------------------
     for (int j = 0; j < m_impl->numAxes; ++j)
     {
@@ -1777,7 +1777,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 5. Create YARP‑level containers and CiA‑402 state machines
+    // Allocate runtime containers and CiA‑402 state machines
     // ---------------------------------------------------------------------
 
     m_impl->variables.resizeContainers(m_impl->numAxes);
@@ -1817,15 +1817,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
           Impl::kClassName.data(),
           m_impl->numAxes);
 
-    // Send one frame so the outputs take effect
-    if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
-    {
-        yError("%s: initial EtherCAT send/receive failed", Impl::kClassName.data());
-        return false;
-    }
-
     // ---------------------------------------------------------------------
-    // 5. Transition to OPERATIONAL and enable DC
+    // Transition to OPERATIONAL and enable DC
     // ---------------------------------------------------------------------
     {
         const auto opErr = m_impl->ethercatManager.goOperational();
@@ -1850,7 +1843,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 6. Launch the device thread
+    // Launch the device thread
     // ---------------------------------------------------------------------
     if (!this->start())
     {
