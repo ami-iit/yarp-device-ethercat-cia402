@@ -1628,6 +1628,12 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
               logPrefix,
               m_impl->ethercatManager.getPdoTimeoutUs());
     }
+    else
+    {
+        yInfo("%s using default PDO receive timeout of %d us",
+              logPrefix,
+              m_impl->ethercatManager.getPdoTimeoutUs());
+    }
 
     // We'll enable DC later, after going OP, using the configured period
     const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
