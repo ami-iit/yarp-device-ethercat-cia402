@@ -215,6 +215,11 @@ public:
         return m_lastWkc;
     }
 
+    int getExpectedWorkingCounter() const noexcept
+    {
+        return m_expectedWkc;
+    }
+
     /**
      * @brief Access the RxPDO (master→slave) buffer for a given slave.
      * @note Pointer remains valid until re-initialization.

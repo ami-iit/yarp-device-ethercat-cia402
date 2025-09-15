@@ -1886,7 +1886,10 @@ void CiA402MotionControl::run()
      * ----------------------------------------------------------------*/
     if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
     {
-        yError("%s: sendReceive() failed", Impl::kClassName.data());
+        yError("%s: sendReceive() failed. Expected wkc=%d, got %d",
+               Impl::kClassName.data(),
+               m_impl->ethercatManager.getExpectedWorkingCounter(),
+               m_impl->ethercatManager.getWorkingCounter());
     }
 
     /* ------------------------------------------------------------------
