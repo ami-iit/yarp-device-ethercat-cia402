@@ -1370,6 +1370,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
     this->setPeriod(period);
+    yDebug("%s: using period = %.6f s", logPrefix, period);
 
     m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
     m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
