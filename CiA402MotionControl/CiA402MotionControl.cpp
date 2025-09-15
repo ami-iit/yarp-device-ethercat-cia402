@@ -71,6 +71,10 @@ struct CiA402MotionControl::Impl
 
     // Constants (unit conversions used throughout)
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
+    // Device timestamp wraps every ~42.949672 s (spec: (2^32 - 1)/100 µs)
+    // Use +1 to account for the fractional remainder and avoid drift negative steps.
+    static constexpr uint64_t TIMESTAMP_WRAP_PERIOD_US
+        = (((uint64_t)1 << 32) - 1) / 100 + 1; // = 42,949,673 µs
 
     //--------------------------------------------------------------------------
     // Parameters that come from the .xml file (see open())
@@ -235,6 +239,10 @@ struct CiA402MotionControl::Impl
     std::vector<bool> posLatched; // true if we have a valid target
     std::vector<double> torqueSeedNm;
     std::vector<int> lastActiveMode;
+
+    // Timestamp unwrap (per-axis) for 32-bit drive timestamps
+    std::vector<uint32_t> tsLastRaw; // last raw 32-bit timestamp read from drive
+    std::vector<uint64_t> tsWraps; // number of wraps (increments when raw decreases)
 
     struct PrositionProfileState
     {
@@ -1063,11 +1071,25 @@ struct CiA402MotionControl::Impl
 
             // --------- Timestamp (if available) ----------
             // Provides drive-side timing information for synchronization
-            this->variables.feedbackTime[j]
-                = tx.has(CiA402::TxField::Timestamp20F0)
-                      ? double(tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0))
-                            * MICROSECONDS_TO_SECONDS
-                      : 0.0;
+            if (tx.has(CiA402::TxField::Timestamp20F0))
+            {
+                const uint32_t raw = tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0);
+                // Unwrap 32-bit microsecond counter: increment wraps if decreasing
+                if (raw < this->tsLastRaw[j])
+                {
+                    // Handle wrap (2^32 microseconds period)
+                    this->tsWraps[j] += 1u;
+                }
+                this->tsLastRaw[j] = raw;
+
+                const uint64_t us_ext
+                    = this->tsWraps[j] * TIMESTAMP_WRAP_PERIOD_US + static_cast<uint64_t>(raw);
+                this->variables.feedbackTime[j]
+                    = static_cast<double>(us_ext) * MICROSECONDS_TO_SECONDS;
+            } else
+            {
+                this->variables.feedbackTime[j] = 0.0;
+            }
 
             // the temperature is given in mC we need to convert Celsius
             this->variables.driveTemperatures[j]
@@ -1790,6 +1812,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->currLatched.assign(m_impl->numAxes, false);
     m_impl->posLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
+    m_impl->tsLastRaw.assign(m_impl->numAxes, 0u);
+    m_impl->tsWraps.assign(m_impl->numAxes, 0u);
     m_impl->ppState.ppRefSpeedDegS.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppRefAccelerationDegSS.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppHaltRequested.assign(m_impl->numAxes, false);
