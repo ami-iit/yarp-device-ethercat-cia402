@@ -73,10 +73,8 @@ struct CiA402MotionControl::Impl
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
     // Device timestamp wraps every ~42.949672 s (spec: (2^32 - 1)/100 µs)
     // Use +1 to account for the fractional remainder and avoid drift negative steps.
+    // 42,949,673 µs
     static constexpr uint64_t TIMESTAMP_WRAP_PERIOD_US = (((uint64_t)1 << 32) - 1) / 100 + 1; // =
-                                                                                              // 42,949,673
-                                                                                              // µs
-
     //--------------------------------------------------------------------------
     // Parameters that come from the .xml file (see open())
     //--------------------------------------------------------------------------
