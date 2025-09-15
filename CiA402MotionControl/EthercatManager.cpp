@@ -39,8 +39,11 @@ EthercatManager::~EthercatManager()
         m_watchThread.join();
     }
 
-    // disable the synchronized clock
-    this->disableDCSync0();
+    // disable the synchronized clock (best-effort)
+    if (m_initialized)
+    {
+        (void)this->disableDCSync0();
+    }
 
     // Close only if port was opened
     if (m_portOpen)
@@ -350,70 +353,22 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     ecx_send_processdata(&m_ctx);
     ecx_receive_processdata(&m_ctx, EC_TIMEOUTRET);
 
-    // =========================================================================
-    // OPERATIONAL STATE TRANSITION
-    // =========================================================================
-    // OPERATIONAL is the final state where:
-    // - All safety interlocks are released
-    // - Outputs are enabled and drives can produce motion
-    // - Full cyclic operation begins
+    // At this point we intentionally stop at SAFE-OP. The caller will decide
+    // when to enter OP via goOperational(). We still set up pointers so SDO
+    // and PDO views work for configuration checks.
 
-    // Request OPERATIONAL state for all slaves
-    m_ctx.slavelist[ALL].state = EC_STATE_OPERATIONAL;
-    ecx_writestate(&m_ctx, ALL);
-
-    // --------- Wait for OPERATIONAL state with timeout ----------
-    // Some drives take time to complete their internal initialization
-    // We poll periodically until all slaves reach OP or we timeout
-    std::size_t attempts = 200; // Maximum polling attempts
-    const int pollTimeout = 50'000; // 50 ms per poll = ~10 second total timeout
-    do
-    {
-        ecx_statecheck(&m_ctx, ALL, EC_STATE_OPERATIONAL, pollTimeout);
-    } while (attempts-- && m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL);
-
-    // Check if transition was successful
-    if (m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL)
-    {
-        yError("%s: Ring failed to reach OP (AL-status 0x%04x)",
-               m_kClassName.data(),
-               m_ctx.slavelist[ALL].ALstatuscode);
-        return Error::SlavesNotOp;
-    }
-
-    // =========================================================================
-    // FINAL INITIALIZATION AND BOOKKEEPING
-    // =========================================================================
-
-    // --------- Calculate expected Working Counter ----------
-    // Working Counter (WKC) is EtherCAT's mechanism for detecting communication errors
-    // Each successful PDO exchange increments the counter by the number of slaves involved
-    // We calculate the expected value based on SOEM's internal group configuration
-    m_expectedWkc = m_ctx.grouplist[0].outputsWKC * 2 + m_ctx.grouplist[0].inputsWKC;
-
-    // --------- Set up PDO access pointers ----------
-    // Now that the IO map is finalized, we can cache pointers to each slave's
-    // PDO areas for efficient runtime access
+    // Set up PDO access pointers (valid after config_map)
     for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
-        // Cache pointer to RxPDO (master → slave data) with proper type casting
         m_rxPtr[s - 1] = reinterpret_cast<RxPDO*>(m_ctx.slavelist[s].outputs);
-
-        // Cache pointer to raw TxPDO buffer (slave → master data)
-        // We use raw uint8_t* because TxPDO layout is dynamic and accessed via TxView
         m_txRaw[s - 1] = reinterpret_cast<uint8_t*>(m_ctx.slavelist[s].inputs);
     }
 
-    // --------- Start background error monitoring ----------
-    // Launch a background thread to continuously monitor slave states
-    // and attempt recovery if any slave drops out of OPERATIONAL state
-    m_runWatch = true;
-    m_watchThread = std::thread(&EthercatManager::errorMonitorLoop, this);
-
-    // Mark initialization as complete
+    // Mark base initialization as complete; not operational yet.
     m_initialized = true;
+    m_isOperational = false;
 
-    yInfo("%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
+    yInfo("%s: EtherCAT: ring is SAFE-OP (waiting for goOperational)", m_kClassName.data());
     return Error::NoError;
 }
 
@@ -424,10 +379,17 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
     {
         return Error::NotInitialized;
     }
-    // Perform cyclic process data exchange with thread safety
+    // Perform cyclic process data exchange with thread safety. In SAFE-OP, inputs
+    // can still be exchanged but outputs are not applied; allow a best-effort
+    // exchange so that configuration code can probe PDOs.
     std::lock_guard<std::mutex> lk(m_ioMtx);
     ecx_send_processdata(&m_ctx);
     m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
+    if (!m_isOperational)
+    {
+        // In SAFE-OP there is no strict WKC expectation; treat any receive as success
+        return (m_lastWkc >= 0) ? Error::NoError : Error::PdoExchangeFailed;
+    }
     if (m_lastWkc >= m_expectedWkc)
         return Error::NoError;
 
@@ -435,6 +397,88 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
     ecx_readstate(&m_ctx);
     m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
     return (m_lastWkc >= m_expectedWkc) ? Error::NoError : Error::PdoExchangeFailed;
+}
+
+EthercatManager::Error EthercatManager::goOperational() noexcept
+{
+    if (!m_initialized)
+        return Error::NotInitialized;
+
+    constexpr std::size_t ALL = 0;
+
+    // Request OPERATIONAL state for all slaves
+    {
+        std::lock_guard<std::mutex> lk(m_ioMtx);
+        m_ctx.slavelist[ALL].state = EC_STATE_OPERATIONAL;
+        ecx_writestate(&m_ctx, ALL);
+    }
+
+    // Wait for OP with timeout
+    std::size_t attempts = 200;
+    const int pollTimeout = 50'000; // 50 ms
+    do
+    {
+        ecx_statecheck(&m_ctx, ALL, EC_STATE_OPERATIONAL, pollTimeout);
+    } while (attempts-- && m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL);
+
+    if (m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL)
+    {
+        yError("%s: Ring failed to reach OP (AL-status 0x%04x)",
+               m_kClassName.data(),
+               m_ctx.slavelist[ALL].ALstatuscode);
+        return Error::SlavesNotOp;
+    }
+
+    // Compute expected WKC now that OP is active
+    m_expectedWkc = m_ctx.grouplist[0].outputsWKC * 2 + m_ctx.grouplist[0].inputsWKC;
+
+    // Start background monitor
+    m_runWatch = true;
+    m_watchThread = std::thread(&EthercatManager::errorMonitorLoop, this);
+    m_isOperational = true;
+    yInfo("%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
+    return Error::NoError;
+}
+
+EthercatManager::Error EthercatManager::goPreOp() noexcept
+{
+    if (!m_initialized)
+        return Error::NotInitialized;
+
+    // Stop background monitor if running
+    m_runWatch = false;
+    if (m_watchThread.joinable())
+        m_watchThread.join();
+
+    // Best-effort: disable DC sync if it had been enabled
+    (void)this->disableDCSync0();
+
+    constexpr std::size_t ALL = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_ioMtx);
+        m_ctx.slavelist[ALL].state = EC_STATE_PRE_OP;
+        ecx_writestate(&m_ctx, ALL);
+    }
+
+    // Wait for PRE-OP
+    std::size_t attempts = 100;
+    const int pollTimeout = 50'000; // 50 ms
+    do
+    {
+        ecx_statecheck(&m_ctx, ALL, EC_STATE_PRE_OP, pollTimeout);
+    } while (attempts-- && m_ctx.slavelist[ALL].state != EC_STATE_PRE_OP);
+
+    if (m_ctx.slavelist[ALL].state != EC_STATE_PRE_OP)
+    {
+        yError("%s: Ring failed to reach PRE-OP (AL-status 0x%04x)",
+               m_kClassName.data(),
+               m_ctx.slavelist[ALL].ALstatuscode);
+        return Error::ConfigFailed;
+    }
+
+    m_isOperational = false;
+    yInfo("%s: EtherCAT: ring is PRE-OP", m_kClassName.data());
+    return Error::NoError;
 }
 
 void EthercatManager::dumpDiagnostics() noexcept

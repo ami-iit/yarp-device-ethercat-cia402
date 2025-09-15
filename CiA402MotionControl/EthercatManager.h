@@ -201,6 +201,12 @@ public:
         return m_initialized;
     }
 
+    /** @brief Whether the ring is in OPERATIONAL state. */
+    bool isOperational() const noexcept
+    {
+        return m_isOperational;
+    }
+
     /**
      * @brief Perform one cyclic send/receive exchange over the bus.
      * @return Error::NoError on success; PdoExchangeFailed otherwise.
@@ -301,6 +307,23 @@ public:
      */
     void dumpDiagnostics() noexcept;
 
+    /**
+     * @brief Transition all slaves to OPERATIONAL and start monitoring.
+     *
+     * Call this after init() and any SDO configuration reads, right before
+     * starting the cyclic control loop. It computes WKC expectations, caches
+     * pointers if needed, and launches the background state monitor.
+     */
+    Error goOperational() noexcept;
+
+    /**
+     * @brief Transition all slaves back to PRE-OP and stop monitoring.
+     *
+     * Use this to temporarily drop out of OP for tests or reconfiguration.
+     * Leaves the manager initialized (SAFE-OP/PRE-OP), but not operational.
+     */
+    Error goPreOp() noexcept;
+
 private:
     /** @brief Background error/AL status monitor loop. */
     void errorMonitorLoop() noexcept;
@@ -324,6 +347,7 @@ private:
     std::atomic<bool> m_initialized{false}; ///< True after successful init().
     std::atomic<bool> m_runWatch{false}; ///< Controls error monitor thread.
     std::thread m_watchThread; ///< Error monitor thread.
+    std::atomic<bool> m_isOperational{false}; ///< True once slaves reached OP.
 
     std::vector<RxPDO*> m_rxPtr; ///< Per-slave RxPDO pointers.
     std::vector<uint8_t*> m_txRaw; ///< Per-slave raw Tx image base pointers.

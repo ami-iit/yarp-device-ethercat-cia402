@@ -1305,6 +1305,19 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return false;
     }
 
+    if (!cfg.check("period") || !cfg.find("period").isFloat64())
+    {
+        yError("%s: 'period' parameter is not a float64", Impl::kClassName.data());
+        return false;
+    }
+    const double period = cfg.find("period").asFloat64();
+    if (period <= 0.0)
+    {
+        yError("%s: 'period' parameter must be positive", Impl::kClassName.data());
+        return false;
+    }
+    this->setPeriod(period);
+
     m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
     m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
     if (cfg.check("expected_slave_name"))
@@ -1536,7 +1549,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     const std::string ifname = cfg.find("ifname").asString();
     // Optional runtime knobs
     const int pdoTimeoutUs = cfg.check("pdo_timeout_us") ? cfg.find("pdo_timeout_us").asInt32()
-                                                          : -1;
+                                                         : -1;
     const bool enableDc = cfg.check("enable_dc") ? cfg.find("enable_dc").asBool() : true;
     const int dcShiftNs = cfg.check("dc_shift_ns") ? cfg.find("dc_shift_ns").asInt32() : 0;
     yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
@@ -1560,21 +1573,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
               m_impl->ethercatManager.getPdoTimeoutUs());
     }
 
-    // Enable Distributed Clocks (SYNC0 only) with cycle = thread period
-    // Convert it into nanoseconds
+    // We'll enable DC later, after going OP, using the configured period
     const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
-    if (enableDc)
-    {
-        const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/dcShiftNs);
-        if (dcErr != ::CiA402::EthercatManager::Error::NoError)
-        {
-            yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
-            return false;
-        }
-    } else
-    {
-        yWarning("%s: DC has been disabled by configuration", Impl::kClassName.data());
-    }
 
     // =========================================================================
     // DRIVE LOOP SOURCE CONFIGURATION READING
@@ -1713,26 +1713,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 2. Idle every drive (switch‑on disabled, no mode selected)
-    // ---------------------------------------------------------------------
-    for (size_t j = 0; j < m_impl->numAxes; ++j)
-    {
-        const int slave = m_impl->firstSlave + static_cast<int>(j);
-        auto* rx = m_impl->ethercatManager.getRxPDO(slave);
-        if (!rx)
-        {
-            yError("%s: invalid slave index %d", Impl::kClassName.data(), slave);
-            return false;
-        }
-        rx->Controlword = 0x0000;
-        rx->OpMode = 0;
-    }
-
-    // Send one frame so the outputs take effect
-    m_impl->ethercatManager.sendReceive();
-
-    // ---------------------------------------------------------------------
-    // 3. Fetch static SDO parameters (encoder resolutions, gear ratios)
+    // 2. Fetch static SDO parameters (encoder resolutions, gear ratios)
     // ---------------------------------------------------------------------
     if (!m_impl->readEncoderResolutions())
     {
@@ -1761,6 +1742,29 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
+    // 3. Idle every drive (switch‑on disabled, no mode selected)
+    // ---------------------------------------------------------------------
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        const int slave = m_impl->firstSlave + static_cast<int>(j);
+        auto* rx = m_impl->ethercatManager.getRxPDO(slave);
+        if (!rx)
+        {
+            yError("%s: invalid slave index %d", Impl::kClassName.data(), slave);
+            return false;
+        }
+        rx->Controlword = 0x0000;
+        rx->OpMode = 0;
+    }
+
+    // Send one frame so the outputs take effect
+    if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
+    {
+        yError("%s: AFTER READ initial EtherCAT send/receive failed", Impl::kClassName.data());
+        return false;
+    }
+
+    // ---------------------------------------------------------------------
     // 4. Configure position windows (for positionReached)
     // ---------------------------------------------------------------------
     for (int j = 0; j < m_impl->numAxes; ++j)
@@ -1776,7 +1780,6 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     // 5. Create YARP‑level containers and CiA‑402 state machines
     // ---------------------------------------------------------------------
 
-    // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->setPoints.resize(m_impl->numAxes);
     m_impl->setPoints.reset();
@@ -1814,8 +1817,40 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
           Impl::kClassName.data(),
           m_impl->numAxes);
 
+    // Send one frame so the outputs take effect
+    if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
+    {
+        yError("%s: initial EtherCAT send/receive failed", Impl::kClassName.data());
+        return false;
+    }
+
     // ---------------------------------------------------------------------
-    // 5. Launch the device thread
+    // 5. Transition to OPERATIONAL and enable DC
+    // ---------------------------------------------------------------------
+    {
+        const auto opErr = m_impl->ethercatManager.goOperational();
+        if (opErr != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: failed to enter OPERATIONAL", Impl::kClassName.data());
+            return false;
+        }
+
+        if (enableDc)
+        {
+            const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/dcShiftNs);
+            if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+            {
+                yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
+                return false;
+            }
+        } else
+        {
+            yWarning("%s: DC has been disabled by configuration", Impl::kClassName.data());
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 6. Launch the device thread
     // ---------------------------------------------------------------------
     if (!this->start())
     {
