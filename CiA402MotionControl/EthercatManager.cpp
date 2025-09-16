@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "EthercatManager.h"
+#include "LogComponent.h"
 
 // std
 #include <chrono>
@@ -223,7 +224,7 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
     wr8(0x1C13, 0x00, static_cast<uint8_t>(txUsed.size())); // Set total count
 
     // Log the mapping result for debugging
-    yDebug("Slave %d '%s': configured %d RxPDOs, %d TxPDOs (%d bytes input)",
+    yCDebug(CIA402,"Slave %d '%s': configured %d RxPDOs, %d TxPDOs (%d bytes input)",
            s,
            m_ctx.slavelist[s].name,
            1,
@@ -245,7 +246,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
     // --------- Initialize SOEM EtherCAT stack ----------
     // SOEM (Simple Open EtherCAT Master) is the underlying EtherCAT library
-    yInfo("%s: EtherCAT: init on %s", m_kClassName.data(), ifname.c_str());
+    yCInfo(CIA402,"%s: EtherCAT: init on %s", m_kClassName.data(), ifname.c_str());
     if (ecx_init(&m_ctx, ifname.c_str()) <= 0)
     {
         return Error::InitFailed;
@@ -262,7 +263,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         m_portOpen = false;
         return Error::NoSlavesFound;
     }
-    yInfo("%s: found %d slaves", m_kClassName.data(), (m_ctx.slavecount ? m_ctx.slavecount : 0));
+    yCInfo(CIA402,"%s: found %d slaves", m_kClassName.data(), (m_ctx.slavecount ? m_ctx.slavecount : 0));
 
     // --------- Validate slave capabilities ----------
     // Before we can configure PDOs via SDO, we need to ensure each slave:
@@ -276,7 +277,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
         if (!(m_ctx.slavelist[s].mbx_proto & ECT_MBXPROT_COE))
         {
-            yError("%s: Slave %d '%s' has no CoE mailbox → cannot use SDO",
+            yCError(CIA402,"%s: Slave %d '%s' has no CoE mailbox → cannot use SDO",
                    m_kClassName.data(),
                    s,
                    m_ctx.slavelist[s].name);
@@ -286,7 +287,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
         // Check if slave supports SDO within CoE
         if (!(m_ctx.slavelist[s].CoEdetails & ECT_COEDET_SDO))
         {
-            yError("%s: Slave %d '%s' has no SDO support",
+            yCError(CIA402,"%s: Slave %d '%s' has no SDO support",
                    m_kClassName.data(),
                    s,
                    m_ctx.slavelist[s].name);
@@ -305,7 +306,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     // in the cyclic exchange. Must be done while slaves are in PRE-OP state.
     for (int s = 1; s <= m_ctx.slavecount; ++s)
     {
-        yInfo("%s: configuring slave %d: %s", m_kClassName.data(), s, m_ctx.slavelist[s].name);
+        yCInfo(CIA402,"%s: configuring slave %d: %s", m_kClassName.data(), s, m_ctx.slavelist[s].name);
 
         if (configurePDOMapping(s) != Error::NoError)
         {
@@ -341,7 +342,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
 
     if (m_ctx.slavelist[ALL].state != EC_STATE_SAFE_OP)
     {
-        yError("%s: Ring failed to reach SAFE-OP (AL-status 0x%04x)",
+        yCError(CIA402,"%s: Ring failed to reach SAFE-OP (AL-status 0x%04x)",
                m_kClassName.data(),
                m_ctx.slavelist[ALL].ALstatuscode);
         return Error::SlavesNotOp;
@@ -368,7 +369,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     m_initialized = true;
     m_isOperational = false;
 
-    yInfo("%s: EtherCAT: ring is SAFE-OP (waiting for goOperational)", m_kClassName.data());
+    yCInfo(CIA402,"%s: EtherCAT: ring is SAFE-OP (waiting for goOperational)", m_kClassName.data());
     return Error::NoError;
 }
 
@@ -423,7 +424,7 @@ EthercatManager::Error EthercatManager::goOperational() noexcept
 
     if (m_ctx.slavelist[ALL].state != EC_STATE_OPERATIONAL)
     {
-        yError("%s: Ring failed to reach OP (AL-status 0x%04x)",
+        yCError(CIA402,"%s: Ring failed to reach OP (AL-status 0x%04x)",
                m_kClassName.data(),
                m_ctx.slavelist[ALL].ALstatuscode);
         return Error::SlavesNotOp;
@@ -436,7 +437,7 @@ EthercatManager::Error EthercatManager::goOperational() noexcept
     m_runWatch = true;
     m_watchThread = std::thread(&EthercatManager::errorMonitorLoop, this);
     m_isOperational = true;
-    yInfo("%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
+    yCInfo(CIA402,"%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
     return Error::NoError;
 }
 
@@ -470,21 +471,21 @@ EthercatManager::Error EthercatManager::goPreOp() noexcept
 
     if (m_ctx.slavelist[ALL].state != EC_STATE_PRE_OP)
     {
-        yError("%s: Ring failed to reach PRE-OP (AL-status 0x%04x)",
+        yCError(CIA402,"%s: Ring failed to reach PRE-OP (AL-status 0x%04x)",
                m_kClassName.data(),
                m_ctx.slavelist[ALL].ALstatuscode);
         return Error::ConfigFailed;
     }
 
     m_isOperational = false;
-    yInfo("%s: EtherCAT: ring is PRE-OP", m_kClassName.data());
+    yCInfo(CIA402,"%s: EtherCAT: ring is PRE-OP", m_kClassName.data());
     return Error::NoError;
 }
 
 void EthercatManager::dumpDiagnostics() noexcept
 {
     std::lock_guard<std::mutex> lk(m_ioMtx);
-    yError("%s: WKC=%d expected=%d, slavecount=%d",
+    yCError(CIA402,"%s: WKC=%d expected=%d, slavecount=%d",
            m_kClassName.data(),
            m_lastWkc,
            m_expectedWkc,
@@ -498,7 +499,7 @@ void EthercatManager::dumpDiagnostics() noexcept
         // SM2/SM3 are typically outputs/inputs
         int sm2 = (EC_MAXSM > 3) ? sl.SM[2].StartAddr : -1;
         int sm3 = (EC_MAXSM > 3) ? sl.SM[3].StartAddr : -1;
-        yError("%s: s%02d '%s' state=0x%02X AL=0x%04X SM2=0x%04X SM3=0x%04X",
+        yCError(CIA402,"%s: s%02d '%s' state=0x%02X AL=0x%04X SM2=0x%04X SM3=0x%04X",
                m_kClassName.data(),
                s,
                sl.name,
