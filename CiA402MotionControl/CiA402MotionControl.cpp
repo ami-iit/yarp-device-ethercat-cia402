@@ -71,8 +71,14 @@ struct CiA402MotionControl::Impl
 
     // Constants (unit conversions used throughout)
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
-
-    //--------------------------------------------------------------------------
+    // Device timestamp wraps every ~42.949672 s (spec: (2^32 - 1)/100 µs)
+    // Use +1 to account for the fractional remainder and avoid drift negative steps.
+    // 42,949,673 µs
+    static constexpr uint64_t TIMESTAMP_WRAP_PERIOD_US = (((uint64_t)1 << 32) - 1) / 100 + 1;
+    // Heuristic for wrap detection: consider a wrap only if the value is jumps backward by more
+    // than half of its range. Small backward steps can happen due to clock adjustments/resets and
+    // must not be treated as wraps.
+    static constexpr uint32_t TIMESTAMP_WRAP_HALF_RANGE = TIMESTAMP_WRAP_PERIOD_US / 2;
     // Parameters that come from the .xml file (see open())
     //--------------------------------------------------------------------------
     size_t numAxes{0}; // how many joints we expose to YARP
@@ -109,7 +115,9 @@ struct CiA402MotionControl::Impl
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> jointTorques; // for getJointTorques()
         std::vector<double> motorCurrents; // for getCurrents()
-        std::vector<double> feedbackTime; // feedback time in seconds
+        std::vector<double> feedbackTime; // feedback time in seconds. Computed from
+                                          // drive’s own internal timestep that starts when the
+                                          // drive boots (or resets)
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
@@ -236,14 +244,18 @@ struct CiA402MotionControl::Impl
     std::vector<double> torqueSeedNm;
     std::vector<int> lastActiveMode;
 
-    struct PrositionProfileState
+    // Timestamp unwrap (per-axis) for 32-bit drive timestamps
+    std::vector<uint32_t> tsLastRaw; // last raw 32-bit timestamp read from drive
+    std::vector<uint64_t> tsWraps; // number of wraps (increments on large backward jumps)
+
+    struct PositionProfileState
     {
         std::mutex mutex;
         std::vector<double> ppRefSpeedDegS;
         std::vector<double> ppRefAccelerationDegSS;
         std::vector<bool> ppHaltRequested;
     };
-    PrositionProfileState ppState;
+    PositionProfileState ppState;
 
     bool opRequested{false}; // true after the first run() call
 
@@ -307,6 +319,8 @@ struct CiA402MotionControl::Impl
     //--------------------------------------------------------------------------
     bool readEncoderResolutions()
     {
+        constexpr auto logPrefix = "[CiA402MotionControl::readEncoderResolutions]";
+
         enc1Res.resize(numAxes);
         enc2Res.resize(numAxes);
         enc1ResInv.resize(numAxes);
@@ -330,17 +344,17 @@ struct CiA402MotionControl::Impl
             enc2ResInv[j] = enc2Res[j] ? 1.0 / double(enc2Res[j]) : 0.0;
         }
 
-        // Print the info we just as yarp debug messages
+        // Print encoder resolution information for all axes
+        yInfo("%s successfully read encoder resolutions from SDO", logPrefix);
         for (size_t j = 0; j < numAxes; ++j)
         {
-            yInfo("Joint %s: enc1Res[%zu] = %u  (inv %.9f),  enc2Res[%zu] = %u  (inv %.9f)",
-                  kClassName.data(),
-                  j,
-                  enc1Res[j],
-                  enc1ResInv[j],
-                  j,
-                  enc2Res[j],
-                  enc2ResInv[j]);
+            yDebug("%s j=%zu enc1_resolution=%u (inv=%.9f), enc2_resolution=%u (inv=%.9f)",
+                   logPrefix,
+                   j,
+                   enc1Res[j],
+                   enc1ResInv[j],
+                   enc2Res[j],
+                   enc2ResInv[j]);
         }
 
         return true;
@@ -374,6 +388,8 @@ struct CiA402MotionControl::Impl
 
     bool readSiVelocityUnits()
     {
+        constexpr auto logPrefix = "[CiA402MotionControl::readSiVelocityUnits]";
+
         this->velToDegS.resize(numAxes);
         this->degSToVel.resize(numAxes);
 
@@ -390,18 +406,19 @@ struct CiA402MotionControl::Impl
             degSToVel[j] = toDev;
 
             if (e == ::CiA402::EthercatManager::Error::NoError)
-                yDebug("Joint %s: axis %zu: 0x60A9=0x%08X → unit %s (1 unit = %.6f deg/s)",
-                       kClassName.data(),
+                yDebug("%s j=%zu 0x60A9=0x%08X velocity_unit=%s (1_unit=%.6f_deg/s)",
+                       logPrefix,
                        j,
                        raw,
                        name,
                        toDegS);
             else
-                yWarning("Joint %s: axis %zu: failed to read 0x60A9, assuming 1 RPM (1 unit = 6 "
-                         "deg/s)",
-                         kClassName.data(),
+                yWarning("%s j=%zu failed to read 0x60A9, assuming 1_RPM (1_unit=6_deg/s)",
+                         logPrefix,
                          j);
         }
+
+        yInfo("%s successfully read velocity conversion units from SDO", logPrefix);
         return true;
     }
 
@@ -485,6 +502,8 @@ struct CiA402MotionControl::Impl
 
     bool readMotorConstants()
     {
+        constexpr auto logPrefix = "[CiA402MotionControl::readMotorConstants]";
+
         torqueConstants.resize(numAxes);
         maxCurrentsA.resize(numAxes);
 
@@ -496,8 +515,10 @@ struct CiA402MotionControl::Impl
                     != ::CiA402::EthercatManager::Error::NoError
                 || tcMicroNmA == 0)
             {
-                yWarning("%s: cannot read torque constant (0x2003:02) or zero → assume 1.0 Nm/A",
-                         kClassName.data());
+                yWarning("%s j=%zu cannot read torque constant (0x2003:02) or zero, assuming 1.0 "
+                         "Nm/A",
+                         logPrefix,
+                         j);
                 torqueConstants[j] = 1.0;
             } else
             {
@@ -513,8 +534,10 @@ struct CiA402MotionControl::Impl
                     != ::CiA402::EthercatManager::Error::NoError
                 || ratedCurrentMilliA == 0)
             {
-                yWarning("%s: cannot read motor rated current (0x6075:00) or zero → assume 1.0 A",
-                         kClassName.data());
+                yWarning("%s j=%zu cannot read motor rated current (0x6075:00) or zero, assuming "
+                         "1.0 A",
+                         logPrefix,
+                         j);
                 ratedCurrentA = 1.0;
             } else
             {
@@ -527,13 +550,14 @@ struct CiA402MotionControl::Impl
             if (ethercatManager.readSDO<uint16_t>(s, 0x6073, 0x00, maxPermille)
                 != ::CiA402::EthercatManager::Error::NoError)
             {
-                yWarning("%s: cannot read max current (0x6073:00) or zero → assume 1000 ‰",
-                         kClassName.data());
+                yWarning("%s j=%zu cannot read max current (0x6073:00), assuming 1000 per_mille",
+                         logPrefix,
+                         j);
                 maxPermille = 1000;
             }
 
-            yDebug("%s: Joint %zu: max current %u ‰ → %f A. Torque constant %f Nm/A",
-                   kClassName.data(),
+            yDebug("%s j=%zu max_current=%u_permille (%.3fA), torque_constant=%.6f_Nm/A",
+                   logPrefix,
                    j,
                    maxPermille,
                    (double(maxPermille) / 1000.0) * ratedCurrentA,
@@ -541,6 +565,8 @@ struct CiA402MotionControl::Impl
 
             maxCurrentsA[j] = (double(maxPermille) / 1000.0) * ratedCurrentA;
         }
+
+        yInfo("%s successfully read motor constants from SDO", logPrefix);
         return true;
     }
 
@@ -555,6 +581,8 @@ struct CiA402MotionControl::Impl
      */
     bool readGearRatios()
     {
+        constexpr auto logPrefix = "[CiA402MotionControl::readGearRatios]";
+
         gearRatio.resize(numAxes);
         gearRatioInv.resize(numAxes);
 
@@ -569,8 +597,9 @@ struct CiA402MotionControl::Impl
             if (ethercatManager.readSDO<uint32_t>(slaveIdx, 0x6091, 0x01, num)
                 != ::CiA402::EthercatManager::Error::NoError)
             {
-                yWarning("Joint %s: gear‑ratio numerator not available (0x6091:01) → assume 1",
-                         kClassName.data());
+                yWarning("%s j=%zu gear_ratio_numerator not available (0x6091:01), assuming 1",
+                         logPrefix,
+                         j);
                 num = 1U;
             }
 
@@ -579,13 +608,19 @@ struct CiA402MotionControl::Impl
                     != ::CiA402::EthercatManager::Error::NoError
                 || den == 0U)
             {
-                yWarning("Joint %s: gear‑ratio denominator not available/zero (0x6091:02) → assume "
+                yWarning("%s j=%zu gear_ratio_denominator not available/zero (0x6091:02), assuming "
                          "1",
-                         kClassName.data());
+                         logPrefix,
+                         j);
                 den = 1U;
             }
 
-            yInfo("Joint %s: gear‑ratio %zu → %u : %u", kClassName.data(), j, num, den);
+            yDebug("%s j=%zu gear_ratio=%u:%u (ratio=%.6f)",
+                   logPrefix,
+                   j,
+                   num,
+                   den,
+                   static_cast<double>(num) / static_cast<double>(den));
 
             // ---- cache value ----------------------------------------------------
             gearRatio[j] = static_cast<double>(num) / static_cast<double>(den);
@@ -597,11 +632,14 @@ struct CiA402MotionControl::Impl
             gearRatioInv[j] = (gearRatio[j] != 0.0) ? (1.0 / gearRatio[j]) : 0.0;
         }
 
+        yInfo("%s successfully read gear ratios from SDO", logPrefix);
         return true;
     }
 
     bool readTorqueValues()
     {
+        constexpr auto logPrefix = "[CiA402MotionControl::readTorqueValues]";
+
         ratedMotorTorqueNm.resize(numAxes);
         maxMotorTorqueNm.resize(numAxes);
 
@@ -612,7 +650,7 @@ struct CiA402MotionControl::Impl
             if (ethercatManager.readSDO<uint32_t>(s, 0x6076, 0x00, rated_mNm)
                 != ::CiA402::EthercatManager::Error::NoError)
             {
-                yError("%s: cannot read rated torque (0x6076:00)", kClassName.data());
+                yError("%s j=%zu cannot read rated torque (0x6076:00)", logPrefix, j);
                 return false;
             }
             ratedMotorTorqueNm[j] = double(rated_mNm) / 1000.0; // motor Nm
@@ -624,16 +662,18 @@ struct CiA402MotionControl::Impl
             if (ethercatManager.readSDO<uint16_t>(s, 0x6072, 0x00, maxPerm)
                 != ::CiA402::EthercatManager::Error::NoError)
             {
-                yError("%s: cannot read max torque (0x6072:00)", kClassName.data());
+                yError("%s j=%zu cannot read max torque (0x6072:00)", logPrefix, j);
                 return false;
             }
             maxMotorTorqueNm[j] = (double(maxPerm) / 1000.0) * ratedMotorTorqueNm[j];
-            yInfo("Joint %s: MOTOR rated %.3f Nm, max %.3f Nm",
-                  kClassName.data(),
-                  ratedMotorTorqueNm[j],
-                  maxMotorTorqueNm[j]);
+            yDebug("%s j=%zu motor_rated_torque=%.3fNm max_torque=%.3fNm",
+                   logPrefix,
+                   j,
+                   ratedMotorTorqueNm[j],
+                   maxMotorTorqueNm[j]);
         }
 
+        yInfo("%s successfully read torque values from SDO", logPrefix);
         return true;
     }
 
@@ -1063,11 +1103,31 @@ struct CiA402MotionControl::Impl
 
             // --------- Timestamp (if available) ----------
             // Provides drive-side timing information for synchronization
-            this->variables.feedbackTime[j]
-                = tx.has(CiA402::TxField::Timestamp20F0)
-                      ? double(tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0))
-                            * MICROSECONDS_TO_SECONDS
-                      : 0.0;
+            if (tx.has(CiA402::TxField::Timestamp20F0))
+            {
+                const uint32_t raw = tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0);
+                // Unwrap 32-bit microsecond counter with threshold to avoid false wraps
+                // due to small, non-monotonic clock adjustments.
+                // Consider a wrap only if the backward jump is larger than half the range.
+                if (raw < this->tsLastRaw[j])
+                {
+                    const uint32_t back = this->tsLastRaw[j] - raw;
+                    if (back > TIMESTAMP_WRAP_HALF_RANGE)
+                    {
+                        this->tsWraps[j] += 1u;
+                    }
+                    // else: small backward step → no wraps increment
+                }
+                this->tsLastRaw[j] = raw;
+
+                const uint64_t us_ext
+                    = this->tsWraps[j] * TIMESTAMP_WRAP_PERIOD_US + static_cast<uint64_t>(raw);
+                this->variables.feedbackTime[j]
+                    = static_cast<double>(us_ext) * MICROSECONDS_TO_SECONDS;
+            } else
+            {
+                this->variables.feedbackTime[j] = 0.0;
+            }
 
             // the temperature is given in mC we need to convert Celsius
             this->variables.driveTemperatures[j]
@@ -1075,6 +1135,7 @@ struct CiA402MotionControl::Impl
                       ? double(tx.get<int32_t>(CiA402::TxField::TemperatureDrive, 0)) * 1e-3
                       : 0.0;
         }
+
         return true;
     }
 
@@ -1291,8 +1352,10 @@ CiA402MotionControl::~CiA402MotionControl() = default;
 
 bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 {
+    constexpr auto logPrefix = "[CiA402MotionControl::open]";
+
     // ---------------------------------------------------------------------
-    // 0. Parse YARP parameters
+    // Parse driver parameters
     // ---------------------------------------------------------------------
     if (!cfg.check("ifname") || !cfg.find("ifname").isString())
     {
@@ -1304,6 +1367,20 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         yError("%s: 'num_axes' parameter is not an integer", Impl::kClassName.data());
         return false;
     }
+
+    if (!cfg.check("period") || !cfg.find("period").isFloat64())
+    {
+        yError("%s: 'period' parameter is not a float64", Impl::kClassName.data());
+        return false;
+    }
+    const double period = cfg.find("period").asFloat64();
+    if (period <= 0.0)
+    {
+        yError("%s: 'period' parameter must be positive", Impl::kClassName.data());
+        return false;
+    }
+    this->setPeriod(period);
+    yDebug("%s: using period = %.6f s", logPrefix, period);
 
     m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
     m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();
@@ -1534,28 +1611,41 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     const std::string ifname = cfg.find("ifname").asString();
-    yInfo("%s: opening EtherCAT manager on %s", Impl::kClassName.data(), ifname.c_str());
+    // Optional runtime knobs
+    const int pdoTimeoutUs = cfg.check("pdo_timeout_us") ? cfg.find("pdo_timeout_us").asInt32()
+                                                         : -1;
+    const bool enableDc = cfg.check("enable_dc") ? cfg.find("enable_dc").asBool() : true;
+    const int dcShiftNs = cfg.check("dc_shift_ns") ? cfg.find("dc_shift_ns").asInt32() : 0;
+    yInfo("%s opening EtherCAT manager on interface %s", logPrefix, ifname.c_str());
 
     // ---------------------------------------------------------------------
-    // 1. Initialise the EtherCAT network via the high‑level manager
+    // Initialize the EtherCAT manager (ring in SAFE‑OP)
     // ---------------------------------------------------------------------
 
     const auto ecErr = m_impl->ethercatManager.init(ifname);
     if (ecErr != ::CiA402::EthercatManager::Error::NoError)
     {
-        yError("%s: EtherCAT init failed (%d)", Impl::kClassName.data(), static_cast<int>(ecErr));
+        yError("%s EtherCAT initialization failed with error code %d",
+               logPrefix,
+               static_cast<int>(ecErr));
         return false;
     }
 
-    // Enable Distributed Clocks (SYNC0 only) with cycle = thread period
-    // Convert it into nanoseconds
-    const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
-    const auto dcErr = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/0);
-    if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+    if (pdoTimeoutUs > 0)
     {
-        yError("%s: failed to enable DC SYNC0", Impl::kClassName.data());
-        return false;
+        m_impl->ethercatManager.setPdoTimeoutUs(pdoTimeoutUs);
+        yInfo("%s PDO receive timeout set to %d us",
+              logPrefix,
+              m_impl->ethercatManager.getPdoTimeoutUs());
+    } else
+    {
+        yInfo("%s using default PDO receive timeout of %d us",
+              logPrefix,
+              m_impl->ethercatManager.getPdoTimeoutUs());
     }
+
+    // We'll enable DC later, after going OP, using the configured period
+    const uint32_t cycleNs = static_cast<uint32_t>(std::llround(this->getPeriod() * 1e9));
 
     // =========================================================================
     // DRIVE LOOP SOURCE CONFIGURATION READING
@@ -1610,8 +1700,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return m_impl->ethercatManager.getTxView(s).has(CiA402::TxField::Enc2Vel2113_03);
     };
 
-    yInfo("%s: using %zu axes, slaves %d ... %d",
-          Impl::kClassName.data(),
+    yInfo("%s using %zu axes, EtherCAT slaves %d to %d",
+          logPrefix,
           m_impl->numAxes,
           m_impl->firstSlave,
           m_impl->firstSlave + int(m_impl->numAxes) - 1);
@@ -1634,7 +1724,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
         auto bad = [&](const char* what) {
-            yError("%s: axis %zu: invalid config: %s", Impl::kClassName.data(), j, what);
+            yError("%s j=%zu invalid configuration: %s", logPrefix, j, what);
             return true;
         };
 
@@ -1694,7 +1784,36 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // ---------------------------------------------------------------------
-    // 2. Idle every drive (switch‑on disabled, no mode selected)
+    // Read static SDO parameters (encoders, velocity units, gear ratios, motor limits)
+    // ---------------------------------------------------------------------
+    if (!m_impl->readEncoderResolutions())
+    {
+        yError("%s failed to read encoder resolutions from SDO", logPrefix);
+        return false;
+    }
+    if (!m_impl->readSiVelocityUnits())
+    {
+        yError("%s failed to read velocity conversions from SDO", logPrefix);
+        return false;
+    }
+    if (!m_impl->readGearRatios())
+    {
+        yError("%s failed to read gear ratios from SDO", logPrefix);
+        return false;
+    }
+    if (!m_impl->readMotorConstants())
+    {
+        yError("%s failed to read motor constants from SDO", logPrefix);
+        return false;
+    }
+    if (!m_impl->readTorqueValues())
+    {
+        yError("%s failed to read torque values from SDO", logPrefix);
+        return false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Idle all drives (switch‑on disabled, no mode selected)
     // ---------------------------------------------------------------------
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
@@ -1702,7 +1821,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         auto* rx = m_impl->ethercatManager.getRxPDO(slave);
         if (!rx)
         {
-            yError("%s: invalid slave index %d", Impl::kClassName.data(), slave);
+            yError("%s invalid slave index %d for axis %zu", logPrefix, slave, j);
             return false;
         }
         rx->Controlword = 0x0000;
@@ -1710,54 +1829,28 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
 
     // Send one frame so the outputs take effect
-    m_impl->ethercatManager.sendReceive();
-
-    // ---------------------------------------------------------------------
-    // 3. Fetch static SDO parameters (encoder resolutions, gear ratios)
-    // ---------------------------------------------------------------------
-    if (!m_impl->readEncoderResolutions())
+    if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
     {
-        yError("%s: failed to read encoder resolutions", Impl::kClassName.data());
-        return false;
-    }
-    if (!m_impl->readSiVelocityUnits())
-    {
-        yError("%s: failed to read velocity conversions", Impl::kClassName.data());
-        return false;
-    }
-    if (!m_impl->readGearRatios())
-    {
-        yError("%s: failed to read gear ratios", Impl::kClassName.data());
-        return false;
-    }
-    if (!m_impl->readMotorConstants())
-    {
-        yError("%s: failed to read motor constants", Impl::kClassName.data());
-        return false;
-    }
-    if (!m_impl->readTorqueValues())
-    {
-        yError("%s: failed to read torque values", Impl::kClassName.data());
+        yError("%s initial EtherCAT send/receive after SDO reading failed", logPrefix);
         return false;
     }
 
     // ---------------------------------------------------------------------
-    // 4. Configure position windows (for positionReached)
+    // Configure position windows (targetReached thresholds)
     // ---------------------------------------------------------------------
     for (int j = 0; j < m_impl->numAxes; ++j)
     {
         if (!m_impl->setPositionWindowDeg(j, positionWindowDeg[j], timingWindowMs[j]))
         {
-            yError("%s: failed to set position window for joint %d", Impl::kClassName.data(), j);
+            yError("%s j=%d failed to set position window", logPrefix, j);
             return false;
         }
     }
 
     // ---------------------------------------------------------------------
-    // 5. Create YARP‑level containers and CiA‑402 state machines
+    // Allocate runtime containers and CiA‑402 state machines
     // ---------------------------------------------------------------------
 
-    // 10. Resize the containers
     m_impl->variables.resizeContainers(m_impl->numAxes);
     m_impl->setPoints.resize(m_impl->numAxes);
     m_impl->setPoints.reset();
@@ -1768,6 +1861,8 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     m_impl->currLatched.assign(m_impl->numAxes, false);
     m_impl->posLatched.assign(m_impl->numAxes, false);
     m_impl->torqueSeedNm.assign(m_impl->numAxes, 0.0);
+    m_impl->tsLastRaw.assign(m_impl->numAxes, 0u);
+    m_impl->tsWraps.assign(m_impl->numAxes, 0u);
     m_impl->ppState.ppRefSpeedDegS.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppRefAccelerationDegSS.assign(m_impl->numAxes, 0.0);
     m_impl->ppState.ppHaltRequested.assign(m_impl->numAxes, false);
@@ -1791,16 +1886,40 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         m_impl->setSDORefSpeed(j, initialPositionVelocityDegs);
     }
 
-    yInfo("%s: opened %zu axes. Initialization complete.",
-          Impl::kClassName.data(),
-          m_impl->numAxes);
+    yInfo("%s opened %zu axes, initialization complete", logPrefix, m_impl->numAxes);
 
     // ---------------------------------------------------------------------
-    // 5. Launch the device thread
+    // Transition to OPERATIONAL and enable DC
+    // ---------------------------------------------------------------------
+    {
+        const auto opErr = m_impl->ethercatManager.goOperational();
+        if (opErr != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s failed to enter OPERATIONAL state", logPrefix);
+            return false;
+        }
+
+        if (enableDc)
+        {
+            const auto dcErr
+                = m_impl->ethercatManager.enableDCSync0(cycleNs, /*shift_ns=*/dcShiftNs);
+            if (dcErr != ::CiA402::EthercatManager::Error::NoError)
+            {
+                yError("%s failed to enable DC SYNC0", logPrefix);
+                return false;
+            }
+        } else
+        {
+            yWarning("%s DC synchronization disabled by configuration", logPrefix);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Launch the device thread
     // ---------------------------------------------------------------------
     if (!this->start())
     {
-        yError("%s: failed to start the thread", Impl::kClassName.data());
+        yError("%s failed to start device thread", logPrefix);
         return false;
     }
 
@@ -1826,6 +1945,8 @@ bool CiA402MotionControl::close()
  */
 void CiA402MotionControl::run()
 {
+    constexpr auto logPrefix = "[CiA402MotionControl::run]";
+
     /* ------------------------------------------------------------------
      * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
      * ----------------------------------------------------------------*/
@@ -1886,7 +2007,11 @@ void CiA402MotionControl::run()
      * ----------------------------------------------------------------*/
     if (m_impl->ethercatManager.sendReceive() != ::CiA402::EthercatManager::Error::NoError)
     {
-        yError("%s: sendReceive() failed", Impl::kClassName.data());
+        yError("%s sendReceive() failed, expected_wkc=%d got_wkc=%d",
+               logPrefix,
+               m_impl->ethercatManager.getExpectedWorkingCounter(),
+               m_impl->ethercatManager.getWorkingCounter());
+        m_impl->ethercatManager.dumpDiagnostics();
     }
 
     /* ------------------------------------------------------------------

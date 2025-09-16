@@ -201,6 +201,12 @@ public:
         return m_initialized;
     }
 
+    /** @brief Whether the ring is in OPERATIONAL state. */
+    bool isOperational() const noexcept
+    {
+        return m_isOperational;
+    }
+
     /**
      * @brief Perform one cyclic send/receive exchange over the bus.
      * @return Error::NoError on success; PdoExchangeFailed otherwise.
@@ -213,6 +219,28 @@ public:
     int getWorkingCounter() const noexcept
     {
         return m_lastWkc;
+    }
+
+    int getExpectedWorkingCounter() const noexcept
+    {
+        return m_expectedWkc;
+    }
+
+    /**
+     * @brief Set receive timeout for PDO exchange (microseconds).
+     * Default is EC_TIMEOUTRET from SOEM. Larger values can help on busy systems.
+     */
+    void setPdoTimeoutUs(int usec) noexcept
+    {
+        m_pdoTimeoutUs = (usec > 0 ? usec : m_pdoTimeoutUs);
+    }
+
+    /**
+     * @brief Get current receive timeout for PDO exchange (microseconds).
+     */
+    int getPdoTimeoutUs() const noexcept
+    {
+        return m_pdoTimeoutUs;
     }
 
     /**
@@ -273,6 +301,29 @@ public:
      */
     Error disableDCSync0() noexcept;
 
+    /**
+     * @brief Print quick diagnostics about bus/slave state and WKC.
+     * Call this when a PDO exchange fails to get immediate hints.
+     */
+    void dumpDiagnostics() noexcept;
+
+    /**
+     * @brief Transition all slaves to OPERATIONAL and start monitoring.
+     *
+     * Call this after init() and any SDO configuration reads, right before
+     * starting the cyclic control loop. It computes WKC expectations, caches
+     * pointers if needed, and launches the background state monitor.
+     */
+    Error goOperational() noexcept;
+
+    /**
+     * @brief Transition all slaves back to PRE-OP and stop monitoring.
+     *
+     * Use this to temporarily drop out of OP for tests or reconfiguration.
+     * Leaves the manager initialized (SAFE-OP/PRE-OP), but not operational.
+     */
+    Error goPreOp() noexcept;
+
 private:
     /** @brief Background error/AL status monitor loop. */
     void errorMonitorLoop() noexcept;
@@ -296,6 +347,7 @@ private:
     std::atomic<bool> m_initialized{false}; ///< True after successful init().
     std::atomic<bool> m_runWatch{false}; ///< Controls error monitor thread.
     std::thread m_watchThread; ///< Error monitor thread.
+    std::atomic<bool> m_isOperational{false}; ///< True once slaves reached OP.
 
     std::vector<RxPDO*> m_rxPtr; ///< Per-slave RxPDO pointers.
     std::vector<uint8_t*> m_txRaw; ///< Per-slave raw Tx image base pointers.
@@ -304,6 +356,7 @@ private:
     int m_lastWkc{0}; ///< Last working counter.
     int m_expectedWkc{0}; ///< Expected working counter.
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
+    int m_pdoTimeoutUs{EC_TIMEOUTRET}; ///< Receive timeout for process data.
 
     mutable std::mutex m_ioMtx; ///< Protects IO/SDO accesses.
 
