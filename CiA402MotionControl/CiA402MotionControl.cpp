@@ -123,7 +123,9 @@ struct CiA402MotionControl::Impl
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> jointTorques; // for getJointTorques()
         std::vector<double> motorCurrents; // for getCurrents()
-        std::vector<double> feedbackTime; // feedback time in seconds
+        std::vector<double> feedbackTime; // feedback time in seconds. Computed from
+                                          // drive’s own internal timestep that starts when the
+                                          // drive boots (or resets)
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
@@ -836,9 +838,8 @@ struct CiA402MotionControl::Impl
 
                     // Convert deg/s → native velocity on the selected shaft for 0x60FF
                     const double vel = shaft_deg_s * this->degSToVel[j];
-                    rx->TargetVelocity = this->invertedMotionSenseDirection[j]
-                                             ? -int32_t(std::llround(vel))
-                                             : int32_t(std::llround(vel));
+                    rx->TargetVelocity = static_cast<int32_t>(std::llround(vel)) *
+                                            (this->invertedMotionSenseDirection[j] ? -1 : 1);
                 }
             }
 
@@ -1135,12 +1136,9 @@ struct CiA402MotionControl::Impl
                 = double(tx.get<int16_t>(CiA402::TxField::Torque6077, 0)) / 1000.0;
             const double motorNm = tq_per_thousand * this->ratedMotorTorqueNm[j];
             // Convert motor torque to joint torque using gear ratio
-            this->variables.jointTorques[j] = this->invertedMotionSenseDirection[j]
-                                                  ? -motorNm * this->gearRatio[j]
-                                                  : motorNm * this->gearRatio[j];
-            this->variables.motorCurrents[j] = this->invertedMotionSenseDirection[j]
-                                                   ? -motorNm / this->torqueConstants[j]
-                                                   : motorNm / this->torqueConstants[j];
+            const double signedMotorNm = this->invertedMotionSenseDirection[j] ? -motorNm : motorNm;
+            this->variables.jointTorques[j] = signedMotorNm * this->gearRatio[j];
+            this->variables.motorCurrents[j] = signedMotorNm / this->torqueConstants[j];
 
             // --------- Safety signals (if mapped into PDOs) ----------
             // These provide real-time status of safety functions
