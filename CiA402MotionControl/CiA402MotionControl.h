@@ -9,6 +9,7 @@
 
 #include <yarp/dev/DeviceDriver.h>
 #include <yarp/dev/IAxisInfo.h>
+#include <yarp/dev/IControlLimits.h>
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/ICurrentControl.h>
 #include <yarp/dev/IEncodersTimed.h>
@@ -41,7 +42,8 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::IPositionControl,
                             public yarp::dev::ICurrentControl,
                             public yarp::dev::IJointFault,
-                            public yarp::dev::IMotor
+                            public yarp::dev::IMotor,
+                            public yarp::dev::IControlLimits
 {
 public:
     /**
@@ -1132,6 +1134,61 @@ public:
      * @note This function is not implemented so it always returns false.
      */
     bool setGearboxRatio(int m, const double val) override;
+
+    // ---------------- IControlLimits --------------
+    /**
+     * @brief Sets the position limits for a specific axis.
+     *
+     * This function sets the minimum and maximum position limits for the specified axis.
+     * The limits are enforced by the device to prevent motion beyond the defined range.
+     *
+     * @param axis Index of the axis (0-based).
+     * @param min Minimum position limit (in joint units, e.g., degrees).
+     * @param max Maximum position limit (in joint units, e.g., degrees).
+     * @return true if the limits were successfully set, false otherwise.
+     */
+    bool setLimits(int axis, double min, double max) override;
+
+    /**
+     * @brief Gets the position limits for a specific axis.
+     *
+     * This function retrieves the minimum and maximum position limits for the specified axis.
+     *
+     * @param axis Index of the axis (0-based).
+     * @param min Pointer to store the minimum position limit (in joint units, e.g., degrees).
+     * @param max Pointer to store the maximum position limit (in joint units, e.g., degrees).
+     * @return true if the limits were successfully retrieved, false otherwise.
+     */
+    bool getLimits(int axis, double* min, double* max) override;
+
+    /**
+     * @brief Sets the velocity limits for a specific axis.
+     *
+     * This function sets the minimum and maximum velocity limits for the specified axis.
+     * The limits are enforced by the device to prevent motion beyond the defined range.
+     *
+     * @param axis Index of the axis (0-based).
+     * @param min Minimum velocity limit (in joint units per second, e.g., degrees/s).
+     * @param max Maximum velocity limit (in joint units per second, e.g., degrees/s).
+     * @return true if the limits were successfully set, false otherwise.
+     * @note The velocity limits is not implemented in this driver, so it always returns false.
+     */
+    bool setVelLimits(int axis, double min, double max) override;
+
+    /**
+     * @brief Gets the velocity limits for a specific axis.
+     *
+     * This function retrieves the minimum and maximum velocity limits for the specified axis.
+     *
+     * @param axis Index of the axis (0-based).
+     * @param min Pointer to store the minimum velocity limit (in joint units per second, e.g.,
+     * degrees/s).
+     * @param max Pointer to store the maximum velocity limit (in joint units per second, e.g.,
+     * degrees/s).
+     * @return true if the limits were successfully retrieved, false otherwise.
+     * @note The velocity limits is not implemented in this driver, so it always returns false.
+     */
+    bool getVelLimits(int axis, double* min, double* max) override;
 
 private:
     struct Impl;

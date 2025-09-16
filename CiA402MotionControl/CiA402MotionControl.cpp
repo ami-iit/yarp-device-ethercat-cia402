@@ -105,6 +105,12 @@ struct CiA402MotionControl::Impl
     std::vector<double> degSToVel; // multiply deg/s to get device value
     std::vector<bool> invertedMotionSenseDirection; // if true the torque, current, velocity and
                                                     // position have inverted sign
+    struct Limits
+    {
+        std::vector<double> maxPositionLimitDeg; // [deg] from 0x607D:1
+        std::vector<double> minPositionLimitDeg; // [deg] from 0x607D:2
+        std::mutex mutex; // protects *all* the above vectors
+    } limits;
 
     struct VariablesReadFromMotors
     {
@@ -312,6 +318,36 @@ struct CiA402MotionControl::Impl
             const int slaveIdx = firstSlave + static_cast<int>(j);
             this->variables.jointNames[j] = ethercatManager.getName(slaveIdx);
         }
+    }
+
+    bool setPositionCountsLimits(int axis, int32_t minCounts, int32_t maxCounts)
+    {
+        constexpr auto logPrefix = "[CiA402MotionControl::setPositionCountsLimits]";
+        auto errorCode = this->ethercatManager.writeSDO<int32_t>(this->firstSlave + axis,
+                                                                 0x607D,
+                                                                 0x01,
+                                                                 minCounts);
+        if (errorCode != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: setLimits: SDO write 0x607D:01 (min) failed for axis %d",
+                   Impl::kClassName.data(),
+                   axis);
+            return false;
+        }
+
+        errorCode = this->ethercatManager.writeSDO<int32_t>(this->firstSlave + axis,
+                                                            0x607D,
+                                                            0x02,
+                                                            maxCounts);
+        if (errorCode != ::CiA402::EthercatManager::Error::NoError)
+        {
+            yError("%s: setLimits: SDO write 0x607D:02 (max) failed for axis %d",
+                   Impl::kClassName.data(),
+                   axis);
+            return false;
+        }
+
+        return true;
     }
 
     //--------------------------------------------------------------------------
@@ -1887,6 +1923,77 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     {
         yError("%s failed to read torque values from SDO", logPrefix);
         return false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Set the position limits (SDO 607D)
+    // ---------------------------------------------------------------------
+    if (!extractListOfDoubleFromSearchable(cfg,
+                                           "pos_limit_min_deg",
+                                           m_impl->limits.minPositionLimitDeg))
+    {
+        yError("%s failed to parse pos_limit_min_deg", logPrefix);
+        return false;
+    }
+    if (!extractListOfDoubleFromSearchable(cfg,
+                                           "pos_limit_max_deg",
+                                           m_impl->limits.maxPositionLimitDeg))
+    {
+        yError("%s failed to parse pos_limit_max_deg", logPrefix);
+        return false;
+    }
+
+    if (m_impl->limits.minPositionLimitDeg.size() != m_impl->numAxes
+        || m_impl->limits.maxPositionLimitDeg.size() != m_impl->numAxes)
+    {
+        yError("%s position limit lists must have exactly %zu elements",
+               logPrefix,
+               m_impl->numAxes);
+        return false;
+    }
+
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        // If a limit value (deg) is negative, we treat that bound as disabled.
+        // Map joint-space bounds [L, U] to drive counts considering possible inversion.
+        const bool inv = m_impl->invertedMotionSenseDirection[j];
+
+        const bool lowerLimitDisabled = (m_impl->limits.minPositionLimitDeg[j] < 0);
+        const bool upperLimitDisabled = (m_impl->limits.maxPositionLimitDeg[j] < 0);
+
+        // Convert joint degrees to target counts (monotonic increasing w.r.t. degrees)
+        const auto lowerLimitCounts
+            = lowerLimitDisabled
+                  ? std::numeric_limits<std::int32_t>::min() // placeholder
+                  : m_impl->jointDegToTargetCounts(j, m_impl->limits.minPositionLimitDeg[j]);
+        const auto upperLimitCounts
+            = upperLimitDisabled
+                  ? std::numeric_limits<std::int32_t>::max() // placeholder
+                  : m_impl->jointDegToTargetCounts(j, m_impl->limits.maxPositionLimitDeg[j]);
+
+        int32_t minCounts = 0;
+        int32_t maxCounts = 0;
+
+        if (!inv)
+        {
+            // Identity mapping: [L, U] -> [counts(L), counts(U)] with disabled -> +/- inf
+            minCounts = lowerLimitDisabled ? std::numeric_limits<int32_t>::min() : lowerLimitCounts;
+            maxCounts = upperLimitDisabled ? std::numeric_limits<int32_t>::max() : upperLimitCounts;
+        } else
+        {
+            // Inversion is a decreasing mapping f(x) = -counts(x), so interval [L, U]
+            // maps to [f(U), f(L)]. Disabled bounds become the corresponding +/- infinity.
+            minCounts = upperLimitDisabled ? std::numeric_limits<int32_t>::min()
+                                           : -upperLimitCounts;
+            maxCounts = lowerLimitDisabled ? std::numeric_limits<int32_t>::max()
+                                           : -lowerLimitCounts;
+        }
+
+        if (!m_impl->setPositionCountsLimits(j, minCounts, maxCounts))
+        {
+            yError("%s j=%zu failed to set position limits", logPrefix, j);
+            return false;
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -4080,6 +4187,91 @@ bool CiA402MotionControl::getRefCurrent(int m, double* curr)
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
     *curr = m_impl->setPoints.motorCurrents[m];
     return true;
+}
+
+bool CiA402MotionControl::setLimits(int axis, double min, double max)
+{
+    if (axis < 0 || axis >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: setLimits: axis %d out of range", Impl::kClassName.data(), axis);
+        return false;
+    }
+    // If both bounds are provided (non-negative), enforce min < max.
+    // When either bound is negative, we treat that side as disabled like in open(),
+    // and skip the ordering check.
+    if (!(min < 0.0 || max < 0.0) && (min >= max))
+    {
+        yError("%s: setLimits: invalid limits [min=%g, max=%g]", Impl::kClassName.data(), min, max);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->limits.mutex);
+        m_impl->limits.maxPositionLimitDeg[axis] = max;
+        m_impl->limits.minPositionLimitDeg[axis] = min;
+    }
+
+    // set the software limits in the drive (SDO 0x607D)
+    // convert the limits from deg to counts, honoring inversion and disabled bounds
+    const bool inv = m_impl->invertedMotionSenseDirection[axis];
+    const bool lowerLimitDisabled = (min < 0.0);
+    const bool upperLimitDisabled = (max < 0.0);
+
+    const auto lowerLimitCounts
+        = lowerLimitDisabled ? 0 : m_impl->jointDegToTargetCounts(size_t(axis), min);
+    const auto upperLimitCounts
+        = upperLimitDisabled ? 0 : m_impl->jointDegToTargetCounts(size_t(axis), max);
+
+    int32_t minCounts = 0;
+    int32_t maxCounts = 0;
+
+    if (!inv)
+    {
+        minCounts = lowerLimitDisabled ? std::numeric_limits<int32_t>::min() : lowerLimitCounts;
+        maxCounts = upperLimitDisabled ? std::numeric_limits<int32_t>::max() : upperLimitCounts;
+    } else
+    {
+        // Inverted: f(x) = -counts(x), so [min,max] -> [f(max), f(min)]
+        minCounts = upperLimitDisabled ? std::numeric_limits<int32_t>::min() : -upperLimitCounts;
+        maxCounts = lowerLimitDisabled ? std::numeric_limits<int32_t>::max() : -lowerLimitCounts;
+    }
+
+    return m_impl->setPositionCountsLimits(axis, minCounts, maxCounts);
+}
+
+bool CiA402MotionControl::getLimits(int axis, double* min, double* max)
+{
+    if (min == nullptr || max == nullptr)
+    {
+        yError("%s: getLimits: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (axis < 0 || axis >= static_cast<int>(m_impl->numAxes))
+    {
+        yError("%s: getLimits: axis %d out of range", Impl::kClassName.data(), axis);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->limits.mutex);
+    *min = m_impl->limits.minPositionLimitDeg[axis];
+    *max = m_impl->limits.maxPositionLimitDeg[axis];
+    return true;
+}
+
+bool CiA402MotionControl::setVelLimits(int axis, double min, double max)
+{
+    // not implemented yet
+    constexpr auto logPrefix = "[CiA402MotionControl::setVelLimits] ";
+    yError("%s: The setVelLimits function is not implemented", logPrefix);
+    return false;
+}
+
+bool CiA402MotionControl::getVelLimits(int axis, double* min, double* max)
+{
+    // not implemented yet
+    constexpr auto logPrefix = "[CiA402MotionControl::getVelLimits] ";
+    yError("%s: The getVelLimits function is not implemented", logPrefix);
+    return false;
 }
 
 } // namespace yarp::dev
