@@ -802,9 +802,8 @@ struct CiA402MotionControl::Impl
 
                     // Convert deg/s → native velocity on the selected shaft for 0x60FF
                     const double vel = shaft_deg_s * this->degSToVel[j];
-                    rx->TargetVelocity = this->invertedMotionSenseDirection[j]
-                                             ? -int32_t(std::llround(vel))
-                                             : int32_t(std::llround(vel));
+                    rx->TargetVelocity = static_cast<int32_t>(std::llround(vel)) *
+                                            (this->invertedMotionSenseDirection[j] ? -1 : 1);
                 }
             }
 
