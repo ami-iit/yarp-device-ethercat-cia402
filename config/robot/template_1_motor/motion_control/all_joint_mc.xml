@@ -7,6 +7,7 @@ BSD-3-Clause license. -->
     <param name="num_axes">1</param>
     <param name="pdo_timeout_us">5000</param>
     <param name="enable_dc">false</param>
+    <param name="inverted_motion_sense_direction">( false )</param>
     <param name="enc1_mount">( "motor" )</param>
     <param name="enc2_mount">( "joint" )</param>
     <param name="position_feedback_motor"> ( "6064" )</param>

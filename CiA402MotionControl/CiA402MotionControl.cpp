@@ -103,6 +103,8 @@ struct CiA402MotionControl::Impl
     std::vector<SensorSrc> velLoopSrc; // drive internal vel loop source (0x2011:05)
     std::vector<double> velToDegS; // multiply device value to get deg/s
     std::vector<double> degSToVel; // multiply deg/s to get device value
+    std::vector<bool> invertedMotionSenseDirection; // if true the torque, current, velocity and
+                                                    // position have inverted sign
 
     struct VariablesReadFromMotors
     {
@@ -748,7 +750,8 @@ struct CiA402MotionControl::Impl
                     const int16_t tq_thousand = static_cast<int16_t>(std::llround(
                         (ratedMotorTorqueNm[j] != 0.0 ? motorNm / ratedMotorTorqueNm[j] : 0.0)
                         * 1000.0));
-                    rx->TargetTorque = tq_thousand;
+                    rx->TargetTorque = this->invertedMotionSenseDirection[j] ? -tq_thousand
+                                                                             : tq_thousand;
                 }
             }
 
@@ -797,7 +800,9 @@ struct CiA402MotionControl::Impl
 
                     // Convert deg/s → native velocity on the selected shaft for 0x60FF
                     const double vel = shaft_deg_s * this->degSToVel[j];
-                    rx->TargetVelocity = static_cast<int32_t>(std::llround(vel));
+                    rx->TargetVelocity = this->invertedMotionSenseDirection[j]
+                                             ? -int32_t(std::llround(vel))
+                                             : int32_t(std::llround(vel));
                 }
             }
 
@@ -839,7 +844,9 @@ struct CiA402MotionControl::Impl
                             rx->Controlword &= ~(1u << 6);
 
                         // Target position (0x607A)
-                        rx->TargetPosition = setPoints.targetCounts[j];
+                        rx->TargetPosition = this->invertedMotionSenseDirection[j]
+                                                 ? -setPoints.targetCounts[j]
+                                                 : setPoints.targetCounts[j];
 
                         // New set-point pulse (rising edge)
                         rx->Controlword |= (1u << 4);
@@ -872,7 +879,8 @@ struct CiA402MotionControl::Impl
                     const int16_t tq_thousand = static_cast<int16_t>(std::llround(
                         (ratedMotorTorqueNm[j] != 0.0 ? torqueNm / ratedMotorTorqueNm[j] : 0.0)
                         * 1000.0));
-                    rx->TargetTorque = tq_thousand;
+                    rx->TargetTorque = this->invertedMotionSenseDirection[j] ? -tq_thousand
+                                                                             : tq_thousand;
                 }
             }
         }
@@ -1048,8 +1056,10 @@ struct CiA402MotionControl::Impl
                 const double motorDeg = shaftFromMount_pos(degM_src, mountM, j, /*asMotor*/ true);
 
                 // Store in output variables
-                this->variables.jointPositions[j] = jointDeg;
-                this->variables.motorEncoders[j] = motorDeg;
+                this->variables.jointPositions[j]
+                    = this->invertedMotionSenseDirection[j] ? -jointDeg : jointDeg;
+                this->variables.motorEncoders[j] //
+                    = this->invertedMotionSenseDirection[j] ? -motorDeg : motorDeg;
             }
 
             // =====================================================================
@@ -1069,8 +1079,10 @@ struct CiA402MotionControl::Impl
                 const double motorDegS = shaftFromMount_vel(degsM_src, mountM, j, /*asMotor*/ true);
 
                 // Store in output variables
-                this->variables.jointVelocities[j] = jointDegS;
-                this->variables.motorVelocities[j] = motorDegS;
+                this->variables.jointVelocities[j]
+                    = this->invertedMotionSenseDirection[j] ? -jointDegS : jointDegS;
+                this->variables.motorVelocities[j]
+                    = this->invertedMotionSenseDirection[j] ? -motorDegS : motorDegS;
             }
 
             // =====================================================================
@@ -1087,8 +1099,12 @@ struct CiA402MotionControl::Impl
                 = double(tx.get<int16_t>(CiA402::TxField::Torque6077, 0)) / 1000.0;
             const double motorNm = tq_per_thousand * this->ratedMotorTorqueNm[j];
             // Convert motor torque to joint torque using gear ratio
-            this->variables.jointTorques[j] = motorNm * this->gearRatio[j];
-            this->variables.motorCurrents[j] = motorNm / this->torqueConstants[j];
+            this->variables.jointTorques[j] = this->invertedMotionSenseDirection[j]
+                                                  ? -motorNm * this->gearRatio[j]
+                                                  : motorNm * this->gearRatio[j];
+            this->variables.motorCurrents[j] = this->invertedMotionSenseDirection[j]
+                                                   ? -motorNm / this->torqueConstants[j]
+                                                   : motorNm / this->torqueConstants[j];
 
             // --------- Safety signals (if mapped into PDOs) ----------
             // These provide real-time status of safety functions
@@ -1554,6 +1570,64 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         return true;
     };
 
+    auto extractListOfBoolFromSearchable = [this](const yarp::os::Searchable& cfg,
+                                                  const char* key,
+                                                  std::vector<bool>& result) -> bool {
+        result.clear();
+
+        if (!cfg.check(key))
+        {
+            yError("%s: missing key '%s'", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const yarp::os::Value& v = cfg.find(key);
+        if (!v.isList())
+        {
+            yError("%s: key '%s' is not a list", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const yarp::os::Bottle* lst = v.asList();
+        if (!lst)
+        {
+            yError("%s: internal error: list for key '%s' is null", Impl::kClassName.data(), key);
+            return false;
+        }
+
+        const size_t expected = static_cast<size_t>(m_impl->numAxes);
+        const size_t actual = static_cast<size_t>(lst->size());
+        if (actual != expected)
+        {
+            yError("%s: list for key '%s' has incorrect size (%zu), expected (%zu)",
+                   Impl::kClassName.data(),
+                   key,
+                   actual,
+                   expected);
+            return false;
+        }
+
+        result.reserve(expected);
+        for (int i = 0; i < lst->size(); ++i)
+        {
+            const yarp::os::Value& elem = lst->get(i);
+
+            if (!elem.isBool())
+            {
+                yError("%s: element %d in list for key '%s' is not a boolean",
+                       Impl::kClassName.data(),
+                       i,
+                       key);
+                result.clear();
+                return false;
+            }
+
+            result.push_back(elem.asBool());
+        }
+
+        return true;
+    };
+
     // Encoder mounting configuration (where each encoder is physically located)
     // enc1_mount must be list of "motor" or "joint"
     // enc2_mount must be list of "motor", "joint" or "none"
@@ -1615,6 +1689,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     const bool enableDc = cfg.check("enable_dc") ? cfg.find("enable_dc").asBool() : true;
     const int dcShiftNs = cfg.check("dc_shift_ns") ? cfg.find("dc_shift_ns").asInt32() : 0;
     yInfo("%s opening EtherCAT manager on interface %s", logPrefix, ifname.c_str());
+
+    if (!extractListOfBoolFromSearchable(cfg,
+                                         "inverted_motion_sense_direction",
+                                         m_impl->invertedMotionSenseDirection))
+        return false;
 
     // ---------------------------------------------------------------------
     // Initialize the EtherCAT manager (ring in SAFE‑OP)
