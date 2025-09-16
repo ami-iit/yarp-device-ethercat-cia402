@@ -117,7 +117,9 @@ struct CiA402MotionControl::Impl
         std::vector<double> jointAccelerations; // for getJointAccelerations()
         std::vector<double> jointTorques; // for getJointTorques()
         std::vector<double> motorCurrents; // for getCurrents()
-        std::vector<double> feedbackTime; // feedback time in seconds
+        std::vector<double> feedbackTime; // feedback time in seconds. Computed from
+                                          // drive’s own internal timestep that starts when the
+                                          // drive boots (or resets)
         std::vector<uint8_t> STO;
         std::vector<uint8_t> SBC;
         std::vector<std::string> jointNames; // for getAxisName()
