@@ -1100,12 +1100,9 @@ struct CiA402MotionControl::Impl
                 = double(tx.get<int16_t>(CiA402::TxField::Torque6077, 0)) / 1000.0;
             const double motorNm = tq_per_thousand * this->ratedMotorTorqueNm[j];
             // Convert motor torque to joint torque using gear ratio
-            this->variables.jointTorques[j] = this->invertedMotionSenseDirection[j]
-                                                  ? -motorNm * this->gearRatio[j]
-                                                  : motorNm * this->gearRatio[j];
-            this->variables.motorCurrents[j] = this->invertedMotionSenseDirection[j]
-                                                   ? -motorNm / this->torqueConstants[j]
-                                                   : motorNm / this->torqueConstants[j];
+            const double signedMotorNm = this->invertedMotionSenseDirection[j] ? -motorNm : motorNm;
+            this->variables.jointTorques[j] = signedMotorNm * this->gearRatio[j];
+            this->variables.motorCurrents[j] = signedMotorNm / this->torqueConstants[j];
 
             // --------- Safety signals (if mapped into PDOs) ----------
             // These provide real-time status of safety functions
