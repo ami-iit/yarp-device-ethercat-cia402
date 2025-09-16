@@ -243,14 +243,14 @@ struct CiA402MotionControl::Impl
     std::vector<uint32_t> tsLastRaw; // last raw 32-bit timestamp read from drive
     std::vector<uint64_t> tsWraps; // number of wraps (increments when raw decreases)
 
-    struct PrositionProfileState
+    struct PositionProfileState
     {
         std::mutex mutex;
         std::vector<double> ppRefSpeedDegS;
         std::vector<double> ppRefAccelerationDegSS;
         std::vector<bool> ppHaltRequested;
     };
-    PrositionProfileState ppState;
+    PositionProfileState ppState;
 
     bool opRequested{false}; // true after the first run() call
 
