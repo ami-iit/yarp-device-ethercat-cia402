@@ -74,12 +74,11 @@ struct CiA402MotionControl::Impl
     // Device timestamp wraps every ~42.949672 s (spec: (2^32 - 1)/100 µs)
     // Use +1 to account for the fractional remainder and avoid drift negative steps.
     // 42,949,673 µs
-    static constexpr uint64_t TIMESTAMP_WRAP_PERIOD_US = (((uint64_t)1 << 32) - 1) / 100 + 1; // =
-    // Heuristic for wrap detection: consider a wrap only if the raw 32-bit counter
-    // jumps backward by more than half of its range. Small backward steps can happen
-    // due to clock adjustments/resets and must not be treated as wraps.
-    static constexpr uint32_t TS_WRAP_HALF_RANGE = 0x80000000u; // 2^31
-    //--------------------------------------------------------------------------
+    static constexpr uint64_t TIMESTAMP_WRAP_PERIOD_US = (((uint64_t)1 << 32) - 1) / 100 + 1;
+    // Heuristic for wrap detection: consider a wrap only if the value is jumps backward by more
+    // than half of its range. Small backward steps can happen due to clock adjustments/resets and
+    // must not be treated as wraps.
+    static constexpr uint32_t TIMESTAMP_WRAP_HALF_RANGE = TIMESTAMP_WRAP_PERIOD_US / 2;
     // Parameters that come from the .xml file (see open())
     //--------------------------------------------------------------------------
     size_t numAxes{0}; // how many joints we expose to YARP
@@ -1105,37 +1104,17 @@ struct CiA402MotionControl::Impl
             if (tx.has(CiA402::TxField::Timestamp20F0))
             {
                 const uint32_t raw = tx.get<uint32_t>(CiA402::TxField::Timestamp20F0, 0);
-                // Heuristic unwrap for 32-bit microsecond counter.
-                // Treat only large backward jumps (> 2^31) as true wraps.
-                // Otherwise, clamp small backward steps to maintain a monotonic timeline.
-                //
-                // Example:
-                //  - previous raw = 100
-                //  - new raw = 90 (small backward step)
-                //    → don't count a wrap; keep wrap count and use previous raw to avoid time going
-                //    backwards
-                //  - previous raw near max, new raw small (e.g., prev=0xFFFF'FF00, new=100)
-                //    → backward delta ≈ 2^32 - 0xFF (huge) > 2^31 → genuine wrap, increment wraps
+                // Unwrap 32-bit microsecond counter with threshold to avoid false wraps
+                // due to small, non-monotonic clock adjustments.
+                // Consider a wrap only if the backward jump is larger than half the range.
                 if (raw < this->tsLastRaw[j])
                 {
                     const uint32_t back = this->tsLastRaw[j] - raw;
-                    if (back > TS_WRAP_HALF_RANGE)
+                    if (back > TIMESTAMP_WRAP_HALF_RANGE)
                     {
-                        // Genuine wrap-around (counter rolled over)
                         this->tsWraps[j] += 1u;
-                    } else
-                    {
-                        // Small backward adjustment: ignore by clamping to last seen raw
-                        // to keep extended time non-decreasing.
-                        // Note: we intentionally do not update tsLastRaw here so that a future
-                        // correct-forward sample will resume from the last good reference.
-                        const uint64_t us_ext = this->tsWraps[j] * TIMESTAMP_WRAP_PERIOD_US
-                                                + static_cast<uint64_t>(this->tsLastRaw[j]);
-                        this->variables.feedbackTime[j]
-                            = static_cast<double>(us_ext) * MICROSECONDS_TO_SECONDS;
-                        // Skip the normal path for this sample
-                        continue;
                     }
+                    // else: small backward step → no wraps increment
                 }
                 this->tsLastRaw[j] = raw;
 
@@ -1154,6 +1133,7 @@ struct CiA402MotionControl::Impl
                       ? double(tx.get<int32_t>(CiA402::TxField::TemperatureDrive, 0)) * 1e-3
                       : 0.0;
         }
+
         return true;
     }
 
