@@ -362,15 +362,6 @@ struct CiA402MotionControl::Impl
         return shaftDeg;
     }
 
-    void fillJointNames()
-    {
-        for (size_t j = 0; j < numAxes; ++j)
-        {
-            const int slaveIdx = firstSlave + static_cast<int>(j);
-            this->variables.jointNames[j] = ethercatManager.getName(slaveIdx);
-        }
-    }
-
     bool setPositionCountsLimits(int axis, int32_t minCounts, int32_t maxCounts)
     {
         constexpr auto logPrefix = "[setPositionCountsLimits]";
@@ -1595,17 +1586,21 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
             }
 
             const std::string val = elem.asString();
-            if (std::find(acceptedKeys.begin(), acceptedKeys.end(), val) == acceptedKeys.end())
-            {
-                yCError(CIA402,
-                        "%s: invalid value '%s' in list for key '%s'",
-                        Impl::kClassName.data(),
-                        val.c_str(),
-                        key);
-                result.clear();
-                return false;
-            }
 
+            // if acceptedKeys is non-empty, validate the value
+            if (!acceptedKeys.empty())
+            {
+                if (std::find(acceptedKeys.begin(), acceptedKeys.end(), val) == acceptedKeys.end())
+                {
+                    yCError(CIA402,
+                            "%s: invalid value '%s' in list for key '%s'",
+                            Impl::kClassName.data(),
+                            val.c_str(),
+                            key);
+                    result.clear();
+                    return false;
+                }
+            }
             result.push_back(val);
         }
 
@@ -2165,7 +2160,9 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         m_impl->sm[j]->reset();
     }
 
-    m_impl->fillJointNames();
+    // get the axes names (if available)
+    if (!extractListOfStringFromSearchable(cfg, "axes_names", {}, m_impl->variables.jointNames))
+        return false;
 
     constexpr double initialPositionVelocityDegs = 10;
     for (size_t j = 0; j < m_impl->numAxes; ++j)
