@@ -1122,14 +1122,27 @@ struct CiA402MotionControl::Impl
 
                 case Impl::VelSrc::S606C:
                 default: {
-                    // CiA402 standard velocity - interpretation depends on drive's velocity loop
-                    // source
-                    if (velLoopSrc[j] == Impl::SensorSrc::Enc1)
+                    // CiA402 standard velocity (0x606C)
+                    // Per Synapticon docs, 0x606C is reported in the POSITION reference frame
+                    // ("driving shaft"). That is, if a Position encoder is configured, 606C is
+                    // scaled to that shaft (typically the joint/load). Only when no position
+                    // encoder exists, it falls back to the velocity/torque encoder shaft (often
+                    // motor).
+                    // Therefore, select the mount based on the POSITION loop source (0x2012:09),
+                    // not the velocity loop source.
+
+                    // Primary: use reported position loop source
+                    if (posLoopSrc[j] == Impl::SensorSrc::Enc1)
                         return {double(v606C) * k, enc1Mount[j]};
-                    if (velLoopSrc[j] == Impl::SensorSrc::Enc2)
+                    if (posLoopSrc[j] == Impl::SensorSrc::Enc2)
                         return {double(v606C) * k, enc2Mount[j]};
 
-                    // Fallback: if loop source unknown, prefer enc1 if available
+                    // Fallback heuristics when 0x2012:09 is Unknown:
+                    // - If we have a joint-side encoder on enc2 (typical dual-encoder setup),
+                    //   assume 606C is joint-side.
+                    if (enc2Mount[j] == Impl::Mount::Joint)
+                        return {double(v606C) * k, enc2Mount[j]};
+                    // - Else prefer enc1 if present; otherwise enc2; else unknown
                     if (enc1Mount[j] != Impl::Mount::None)
                         return {double(v606C) * k, enc1Mount[j]};
                     if (enc2Mount[j] != Impl::Mount::None)
