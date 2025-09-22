@@ -1588,7 +1588,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
             const std::string val = elem.asString();
 
             // if acceptedKeys is non-empty, validate the value
-            if (!acceptedKeys.empty() && acceptedKeys.size() > 0)
+            if (!acceptedKeys.empty())
             {
                 if (std::find(acceptedKeys.begin(), acceptedKeys.end(), val) == acceptedKeys.end())
                 {
