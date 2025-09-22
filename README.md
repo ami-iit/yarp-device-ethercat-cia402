@@ -55,15 +55,15 @@ The plugin requires a configuration file defining the EtherCAT network and devic
 ### Setting Up `yarprobotinterface` 🛠️
 To ensure that the `yarprobotinterface` binary has the correct permissions and can locate its dependencies, execute:
 
-```bash
-sudo setcap cap_net_raw,cap_net_admin+ep $(which yarprobotinterface)
+```console
 patchelf --add-rpath $(dirname $(dirname $(which yarprobotinterface)))/lib $(which yarprobotinterface)
+sudo setcap cap_net_raw,cap_net_admin+ep $(which yarprobotinterface)
 ```
 
 ### Example 💡
 To run the plugin with a specific configuration:
 ```bash
-yarprobotinterface --config config/robot/adj8/config.xml
+yarprobotinterface --config config/robot/template_1_motor/config.xml
 ```
 
 ## Supported Drives 🛠️
