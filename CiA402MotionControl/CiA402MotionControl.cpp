@@ -777,9 +777,9 @@ struct CiA402MotionControl::Impl
 
     void setSDORefSpeed(int j, double spDegS)
     {
-        // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on vel loop source + mount) ----
+        // ----  map JOINT deg/s -> LOOP SHAFT deg/s (based on pos loop source + mount) ----
         double shaft_deg_s = spDegS; // default assume joint shaft
-        switch (this->velLoopSrc[j])
+        switch (this->posLoopSrc[j])
         {
         case Impl::SensorSrc::Enc1:
             if (this->enc1Mount[j] == Impl::Mount::Motor)
