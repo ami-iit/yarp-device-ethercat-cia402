@@ -871,7 +871,9 @@ struct CiA402MotionControl::Impl
                     //  - if loop sensor is joint-mounted → pass through
                     double shaft_deg_s = joint_deg_s; // default: joint shaft
 
-                    switch (velLoopSrc[j])
+                    // The desired velocity setpoint depends on which encoder is used for
+                    // the position loop and how it is mounted.
+                    switch (posLoopSrc[j])
                     {
                     case Impl::SensorSrc::Enc1:
                         if (enc1Mount[j] == Impl::Mount::Motor)
