@@ -213,27 +213,27 @@ bool StoreHome37::run(yarp::os::ResourceFinder& rf)
     const int8_t method = static_cast<int8_t>(methodTmp);
 
     int32_t homeOffset = 0;
-    if (rf.check("homeOffset"))
+    if (rf.check("home_offset"))
     {
-        homeOffset = rf.find("homeOffset").asInt32();
+        homeOffset = rf.find("home_offset").asInt32();
     }
 
     int timeoutMs = 2000;
-    if (rf.check("timeoutMs"))
+    if (rf.check("timeout_ms"))
     {
-        timeoutMs = rf.find("timeoutMs").asInt32();
+        timeoutMs = rf.find("timeout_ms").asInt32();
     }
 
     bool restoreOnBoot = true;
-    if (rf.check("restoreOnBoot"))
+    if (rf.check("restore_on_boot"))
     {
         // Accept bool or int
-        if (rf.find("restoreOnBoot").isBool())
+        if (rf.find("restore_on_boot").isBool())
         {
-            restoreOnBoot = rf.find("restoreOnBoot").asBool();
+            restoreOnBoot = rf.find("restore_on_boot").asBool();
         } else
         {
-            restoreOnBoot = (rf.find("restoreOnBoot").asInt32() != 0);
+            restoreOnBoot = (rf.find("restore_on_boot").asInt32() != 0);
         }
     }
 

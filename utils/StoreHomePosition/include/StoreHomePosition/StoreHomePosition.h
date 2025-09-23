@@ -43,9 +43,9 @@ public:
      * @note Expected keys in the ResourceFinder:
      * - ifname: string NIC name (default: "eth0")
      * - method: int 37 or 35 (default: 37)
-     * - homeOffset: int32 offset (default: 0)
-     * - timeoutMs: int polling timeout (default: 2000)
-     * - restoreOnBoot: bool/int (default: 1)
+     * - home_offset: int32 offset (default: 0)
+     * - timeout_ms: int polling timeout (default: 2000)
+     * - restore_on_boot: bool/int (default: 1)
      */
     bool run(yarp::os::ResourceFinder& rf);
 
