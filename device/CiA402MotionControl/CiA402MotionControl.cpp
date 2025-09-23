@@ -3,8 +3,9 @@
 
 #include "CiA402MotionControl.h"
 #include "CiA402StateMachine.h"
-#include "EthercatManager.h"
-#include "LogComponent.h"
+
+#include <CiA402/EthercatManager.h>
+#include <CiA402/LogComponent.h>
 
 // YARP
 #include <yarp/os/LogStream.h>

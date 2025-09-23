@@ -66,10 +66,12 @@ find_package(YARP REQUIRED)
 find_package(soem REQUIRED)
 
 # macro to automatize the process of creating a YARP device
+include(AddLibrary)
 include(AddYARPDevice)
 include(AddApplication)
 
-add_subdirectory(CiA402MotionControl)
+add_subdirectory(src)
+add_subdirectory(device)
 
 add_subdirectory(test)
 

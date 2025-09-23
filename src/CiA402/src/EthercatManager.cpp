@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Fondazione Istituto Italiano di Tecnologia (IIT)
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "EthercatManager.h"
-#include "LogComponent.h"
+#include <CiA402/EthercatManager.h>
+#include <CiA402/LogComponent.h>
 
 // std
 #include <chrono>
