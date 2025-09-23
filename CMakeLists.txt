@@ -71,6 +71,7 @@ include(AddYARPDevice)
 include(AddApplication)
 
 add_subdirectory(src)
+add_subdirectory(utils)
 add_subdirectory(device)
 
 add_subdirectory(test)
