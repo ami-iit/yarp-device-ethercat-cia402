@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 
+#include <yarp/os/ResourceFinder.h>
+
 namespace CiA402
 {
 
@@ -34,19 +36,18 @@ public:
     StoreHome37& operator=(const StoreHome37&) = delete;
 
     /**
-     * @param ifname            NIC name (e.g., "eth0").
-     * @param homingMethod      37 (default) or 35.
-     * @param homeOffset        Extra offset added to home (0x607C), default 0.
-     * @param pollTimeoutMs     Timeout for homing attained polling, per slave.
-     * @param restoreOnStartup  If true, writes 0x2005:02=1 so the saved home is applied at boot.
-     *                          If false, writes 0x2005:02=0 (home saved but not auto-applied).
-     * @return true if all slaves succeed; false otherwise.
+     * @brief Run the homing and persistence procedure on all slaves found on the given interface.
+     * @param rf ResourceFinder with configuration parameters (see below).
+     * @return true on success (all slaves homed and persisted); false on any error.
+     *
+     * @note Expected keys in the ResourceFinder:
+     * - ifname: string NIC name (default: "eth0")
+     * - method: int 37 or 35 (default: 37)
+     * - homeOffset: int32 offset (default: 0)
+     * - timeoutMs: int polling timeout (default: 2000)
+     * - restoreOnBoot: bool/int (default: 1)
      */
-    bool run(const std::string& ifname,
-             int8_t homingMethod = 37,
-             int32_t homeOffset = 0,
-             int pollTimeoutMs = 2000,
-             bool restoreOnStartup = true);
+    bool run(yarp::os::ResourceFinder& rf);
 
 private:
     class Impl;

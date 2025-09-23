@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <vector>
 
@@ -10,6 +11,7 @@
 
 #include <StoreHomePosition/StoreHomePosition.h>
 #include <yarp/os/LogStream.h>
+#include <yarp/os/ResourceFinder.h>
 
 using namespace CiA402;
 using namespace std::chrono_literals;
@@ -199,11 +201,51 @@ StoreHome37::StoreHome37()
 
 StoreHome37::~StoreHome37() = default;
 
-bool StoreHome37::run(const std::string& ifname,
-                      int8_t homingMethod,
-                      int32_t homeOffset,
-                      int pollTimeoutMs,
-                      bool restoreOnStartup)
+bool StoreHome37::run(yarp::os::ResourceFinder& rf)
 {
-    return m_impl->run(ifname, homingMethod, homeOffset, pollTimeoutMs, restoreOnStartup);
+    const std::string ifname = rf.check("ifname") ? rf.find("ifname").asString()
+                                                  : std::string("eth0");
+    int methodTmp = 37;
+    if (rf.check("method"))
+    {
+        methodTmp = rf.find("method").asInt32();
+    }
+    const int8_t method = static_cast<int8_t>(methodTmp);
+
+    int32_t homeOffset = 0;
+    if (rf.check("homeOffset"))
+    {
+        homeOffset = rf.find("homeOffset").asInt32();
+    }
+
+    int timeoutMs = 2000;
+    if (rf.check("timeoutMs"))
+    {
+        timeoutMs = rf.find("timeoutMs").asInt32();
+    }
+
+    bool restoreOnBoot = true;
+    if (rf.check("restoreOnBoot"))
+    {
+        // Accept bool or int
+        if (rf.find("restoreOnBoot").isBool())
+        {
+            restoreOnBoot = rf.find("restoreOnBoot").asBool();
+        } else
+        {
+            restoreOnBoot = (rf.find("restoreOnBoot").asInt32() != 0);
+        }
+    }
+
+    yCInfo(CIA402,
+           "StoreHome37: ifname=%s method=%d homeOffset=%d timeoutMs=%d restoreOnBoot=%s",
+           ifname.c_str(),
+           int(method),
+           homeOffset,
+           timeoutMs,
+           restoreOnBoot ? "true" : "false");
+    yCInfo(CIA402, "Do you want to proceed? (press ENTER to continue)");
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    return m_impl->run(ifname, method, homeOffset, timeoutMs, restoreOnBoot);
 }

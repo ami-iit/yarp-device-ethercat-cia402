@@ -7,17 +7,17 @@
 #include <StoreHomePosition/StoreHomePosition.h>
 
 #include <yarp/os/LogStream.h>
+#include <yarp/os/ResourceFinder.h>
 
 int main(int argc, char** argv)
 {
-    const std::string ifname = (argc > 1) ? argv[1] : "eth0";
-    const int8_t method = (argc > 2) ? static_cast<int8_t>(std::stoi(argv[2])) : 37; // 37 or 35
-    const int32_t homeOffset = (argc > 3) ? std::stoi(argv[3]) : 0;
-    const int timeoutMs = (argc > 4) ? std::stoi(argv[4]) : 2000;
-    const bool restoreOnBoot = (argc > 5) ? (std::stoi(argv[5]) != 0) : true; // default true
+    // prepare and configure the resource finder
+    yarp::os::ResourceFinder& rf = yarp::os::ResourceFinder::getResourceFinderSingleton();
+    rf.setDefaultConfigFile("yarp-cia420-store-home.ini");
+    rf.configure(argc, argv);
 
     CiA402::StoreHome37 app;
-    const bool ok = app.run(ifname, method, homeOffset, timeoutMs, restoreOnBoot);
+    const bool ok = app.run(rf);
     if (!ok)
     {
         yCError(CIA402, "StoreHome37: FAILED");
