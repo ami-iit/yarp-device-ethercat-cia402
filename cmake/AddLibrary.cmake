@@ -7,13 +7,13 @@ function(add_cia402_library)
   set(options IS_INTERFACE SKIP_INSTALL_CHECK SKIP_INSTALL)
   set(oneValueArgs NAME INSTALLATION_FOLDER)
   set(multiValueArgs
-    SOURCES
-    PUBLIC_HEADERS
-    PRIVATE_HEADERS
-    PUBLIC_LINK_LIBRARIES
-    PRIVATE_LINK_LIBRARIES
-    PRIVATE_WINDOWS_LINK_LIBRARIES
-    SUBDIRECTORIES)
+      SOURCES
+      PUBLIC_HEADERS
+      PRIVATE_HEADERS
+      PUBLIC_LINK_LIBRARIES
+      PRIVATE_LINK_LIBRARIES
+      PRIVATE_WINDOWS_LINK_LIBRARIES
+      SUBDIRECTORIES)
 
   set(prefix "cia402_library")
 
@@ -83,7 +83,7 @@ function(add_cia402_library)
     endif()
 
     set_target_properties(${name} PROPERTIES
-      OUTPUT_NAME "${PROJECT_NAME}${name}"
+      OUTPUT_NAME "yarp-cia402-${name}"
       VERSION ${PROJECT_VERSION}
       PUBLIC_HEADER "${public_headers}"
       PRIVATE_HEADER "${private_headers}")
