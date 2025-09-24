@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.8...3.30)
 project(
     YarpCiA402                                # project name
-    VERSION 0.4.0                             # bump as you tag releases
+    VERSION 0.5.0                             # bump as you tag releases
     DESCRIPTION "YARP device plugin for EtherCAT CiA402 drives"
     LANGUAGES CXX
 )
