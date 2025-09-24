@@ -34,7 +34,7 @@ function(add_application)
   target_compile_definitions(${name} PRIVATE -D_USE_MATH_DEFINES)
 
   set_target_properties(${name} PROPERTIES
-      OUTPUT_NAME "${name}"
+      OUTPUT_NAME "${PROJECT_NAME}-${name}"
       VERSION ${PROJECT_VERSION})
 
   target_link_libraries(${name} PRIVATE ${link_libraries})
@@ -43,8 +43,8 @@ function(add_application)
   target_include_directories(${name} PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
 
   # # Specify installation targets, typology and destination folders.
-  # install(TARGETS    ${name}
-  #   DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT bin)
+  install(TARGETS  ${name}
+    DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT bin)
 
   # # Add all subdirectories
   # foreach(subdir ${subdirectories})

@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.8...3.30)
 project(
-    yarp-device-ethercat-cia402               # project name
+    YarpCiA402                                # project name
     VERSION 0.4.0                             # bump as you tag releases
     DESCRIPTION "YARP device plugin for EtherCAT CiA402 drives"
     LANGUAGES CXX
@@ -66,11 +66,14 @@ find_package(YARP REQUIRED)
 find_package(soem REQUIRED)
 
 # macro to automatize the process of creating a YARP device
+include(AddLibrary)
 include(AddYARPDevice)
 include(AddApplication)
 
-add_subdirectory(CiA402MotionControl)
+add_subdirectory(src)
+add_subdirectory(utils)
+add_subdirectory(device)
 
-add_subdirectory(test)
+# add_subdirectory(test)
 
 include(AddUninstallTarget)
