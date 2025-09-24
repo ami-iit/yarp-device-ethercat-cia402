@@ -42,10 +42,12 @@ class StoreHome37::Impl
 public:
     bool run(const std::string& ifname, int8_t hm, int32_t hoff, int timeoutMs, bool restore)
     {
-        auto rc = mgr.init(ifname);
+        // Initialize EtherCAT master
+        yCInfo(CIA402, "StoreHome37: initializing EtherCAT on %s", ifname.c_str());
+        const auto rc = mgr.init(ifname);
         if (rc != EthercatManager::Error::NoError)
         {
-            yCError(CIA402, "StoreHome3537: init failed on %s (rc=%d)", ifname.c_str(), int(rc));
+            yCError(CIA402, "StoreHome37: init failed on %s (rc=%d)", ifname.c_str(), int(rc));
             return false;
         }
 
@@ -174,19 +176,19 @@ private:
         }
 
         // -- 8) Save to flash: 0x1010:01 = 'evas' (0x65766173)
-        // {
-        //     constexpr uint32_t EVAS = 0x65766173u;
-        //     if (mgr.writeSDO<uint32_t>(s, IDX_STORE_PARAMS, 0x01, EVAS)
-        //         != EthercatManager::Error::NoError)
-        //     {
-        //         yCError(CIA402, "s%02d: save 0x1010:01='evas' failed", s);
-        //         return false;
-        //     }
-        //     yCInfo(CIA402,
-        //            "s%02d: configuration saved (home persisted, restoreOnStartup=%s)",
-        //            s,
-        //            restore ? "true" : "false");
-        // }
+        {
+            constexpr uint32_t EVAS = 0x65766173u;
+            if (mgr.writeSDO<uint32_t>(s, IDX_STORE_PARAMS, 0x01, EVAS)
+                != EthercatManager::Error::NoError)
+            {
+                yCError(CIA402, "s%02d: save 0x1010:01='evas' failed", s);
+                return false;
+            }
+            yCInfo(CIA402,
+                   "s%02d: configuration saved (home persisted, restoreOnStartup=%s)",
+                   s,
+                   restore ? "true" : "false");
+        }
 
         return true;
     }
@@ -213,32 +215,32 @@ bool StoreHome37::run(yarp::os::ResourceFinder& rf)
     const int8_t method = static_cast<int8_t>(methodTmp);
 
     int32_t homeOffset = 0;
-    if (rf.check("home_offset"))
+    if (rf.check("home-offset"))
     {
-        homeOffset = rf.find("home_offset").asInt32();
+        homeOffset = rf.find("home-offset").asInt32();
     }
 
     int timeoutMs = 2000;
-    if (rf.check("timeout_ms"))
+    if (rf.check("timeout-ms"))
     {
-        timeoutMs = rf.find("timeout_ms").asInt32();
+        timeoutMs = rf.find("timeout-ms").asInt32();
     }
 
     bool restoreOnBoot = true;
-    if (rf.check("restore_on_boot"))
+    if (rf.check("restore-on-boot"))
     {
         // Accept bool or int
-        if (rf.find("restore_on_boot").isBool())
+        if (rf.find("restore-on-boot").isBool())
         {
-            restoreOnBoot = rf.find("restore_on_boot").asBool();
+            restoreOnBoot = rf.find("restore-on-boot").asBool();
         } else
         {
-            restoreOnBoot = (rf.find("restore_on_boot").asInt32() != 0);
+            restoreOnBoot = (rf.find("restore-on-boot").asInt32() != 0);
         }
     }
 
     yCInfo(CIA402,
-           "StoreHome37: ifname=%s method=%d homeOffset=%d timeoutMs=%d restoreOnBoot=%s",
+           "StoreHome37: ifname=%s method=%d home-offset=%d timeout-ms=%d restore-on-boot=%s",
            ifname.c_str(),
            int(method),
            homeOffset,

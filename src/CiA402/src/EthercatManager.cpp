@@ -249,6 +249,7 @@ EthercatManager::Error EthercatManager::init(const std::string& ifname) noexcept
     yCInfo(CIA402,"%s: EtherCAT: init on %s", m_kClassName.data(), ifname.c_str());
     if (ecx_init(&m_ctx, ifname.c_str()) <= 0)
     {
+        yCError(CIA402,"%s: cannot initialize on %s", m_kClassName.data(), ifname.c_str());
         return Error::InitFailed;
     }
 
