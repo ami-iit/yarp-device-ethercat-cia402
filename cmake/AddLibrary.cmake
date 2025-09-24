@@ -110,7 +110,7 @@ function(add_cia402_library)
   endif()
 
   # add alias
-  add_library(CiA402::${name} ALIAS ${name})
+  add_library(${PROJECT_NAME}::${name} ALIAS ${name})
 
   # Add all subdirectories
   foreach(subdir ${subdirectories})
