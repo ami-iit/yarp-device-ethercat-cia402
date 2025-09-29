@@ -271,6 +271,10 @@ struct CiA402MotionControl::Impl
 
     bool opRequested{false}; // true after the first run() call
 
+    /** Dummy interaction mode for all the joints */
+    yarp::dev::InteractionModeEnum dummyInteractionMode{
+        yarp::dev::InteractionModeEnum::VOCAB_IM_STIFF};
+
     Impl() = default;
     ~Impl() = default;
 
@@ -4427,6 +4431,110 @@ bool CiA402MotionControl::getVelLimits(int axis, double* min, double* max)
     // not implemented yet
     constexpr auto logPrefix = "[getVelLimits] ";
     yCError(CIA402, "%s: The getVelLimits function is not implemented", logPrefix);
+    return false;
+}
+
+bool CiA402MotionControl::getInteractionMode(int axis, yarp::dev::InteractionModeEnum* mode)
+{
+    if (!mode)
+    {
+        yCError(CIA402, "%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    *mode = m_impl->dummyInteractionMode;
+    return true;
+}
+
+bool CiA402MotionControl::getInteractionModes(int n_joints,
+                                              int* joints,
+                                              yarp::dev::InteractionModeEnum* modes)
+{
+    if (!joints || !modes || n_joints <= 0)
+    {
+        yCError(CIA402, "%s: invalid args", Impl::kClassName.data());
+        return false;
+    }
+
+    for (int k = 0; k < n_joints; ++k)
+    {
+        if (joints[k] < 0 || joints[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yCError(CIA402, "%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+            return false;
+        }
+        modes[k] = m_impl->dummyInteractionMode;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::getInteractionModes(yarp::dev::InteractionModeEnum* modes)
+{
+    if (modes == nullptr)
+    {
+        yCError(CIA402, "%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        modes[j] = m_impl->dummyInteractionMode;
+    }
+    return true;
+}
+
+bool CiA402MotionControl::setInteractionMode(int axis, yarp::dev::InteractionModeEnum mode)
+{
+    if (axis < 0 || axis >= static_cast<int>(m_impl->numAxes))
+    {
+        yCError(CIA402, "%s: joint %d out of range", Impl::kClassName.data(), axis);
+        return false;
+    }
+
+    // The interaction mode is not implemented in this driver.
+    yCError(CIA402,
+            "%s: The setInteractionMode function is not implemented",
+            Impl::kClassName.data());
+    return false;
+}
+
+bool CiA402MotionControl::setInteractionModes(int n_joints,
+                                              int* joints,
+                                              yarp::dev::InteractionModeEnum* modes)
+{
+    if (!joints || !modes || n_joints <= 0)
+    {
+        yCError(CIA402, "%s: invalid args", Impl::kClassName.data());
+        return false;
+    }
+
+    for (int k = 0; k < n_joints; ++k)
+    {
+        if (joints[k] < 0 || joints[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yCError(CIA402, "%s: joint %d out of range", Impl::kClassName.data(), joints[k]);
+            return false;
+        }
+    }
+
+    // The interaction mode is not implemented in this driver.
+    yCError(CIA402,
+            "%s: The setInteractionModes function is not implemented",
+            Impl::kClassName.data());
+    return false;
+}
+
+bool CiA402MotionControl::setInteractionModes(yarp::dev::InteractionModeEnum* modes)
+{
+    if (modes == nullptr)
+    {
+        yCError(CIA402, "%s: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    yCError(CIA402,
+            "%s: The setInteractionModes function is not implemented",
+            Impl::kClassName.data());
     return false;
 }
 

@@ -13,6 +13,7 @@
 #include <yarp/dev/IControlMode.h>
 #include <yarp/dev/ICurrentControl.h>
 #include <yarp/dev/IEncodersTimed.h>
+#include <yarp/dev/IInteractionMode.h>
 #include <yarp/dev/IJointFault.h>
 #include <yarp/dev/IMotor.h>
 #include <yarp/dev/IMotorEncoders.h>
@@ -43,7 +44,8 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::ICurrentControl,
                             public yarp::dev::IJointFault,
                             public yarp::dev::IMotor,
-                            public yarp::dev::IControlLimits
+                            public yarp::dev::IControlLimits,
+                            public yarp::dev::IInteractionMode
 {
 public:
     /**
@@ -1189,6 +1191,60 @@ public:
      * @note The velocity limits is not implemented in this driver, so it always returns false.
      */
     bool getVelLimits(int axis, double* min, double* max) override;
+
+    /**
+     * @brief Gets the interaction mode of a specific axis.
+     * @param axis Index of the axis (0-based).
+     * @param mode Pointer to store the interaction mode.
+     * @return true if the mode was successfully retrieved, false otherwise.
+     * @note The interaction mode is not implemented in this driver, it always returns stiff.
+     */
+    bool getInteractionMode(int axis, yarp::dev::InteractionModeEnum* mode) override;
+
+    /**
+     * @brief Gets the interaction modes of a subset of joints.
+     * @param n_joints Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array to store the interaction modes.
+     * @return true if the modes were successfully retrieved, false otherwise.
+     */
+    bool
+    getInteractionModes(int n_joints, int* joints, yarp::dev::InteractionModeEnum* modes) override;
+
+    /**
+     * @brief Gets the interaction modes of all joints.
+     * @param modes Array to store the interaction modes.
+     * @return true if the modes were successfully retrieved, false otherwise.
+     */
+    bool getInteractionModes(yarp::dev::InteractionModeEnum* modes) override;
+
+    /**
+     * @brief Sets the interaction mode of a specific axis.
+     * @param axis Index of the axis (0-based).
+     * @param mode Interaction mode to set.
+     * @return true if the mode was successfully set, false otherwise.
+     * @note The interaction mode is not implemented in this driver, so it always returns false.
+     */
+    bool setInteractionMode(int axis, yarp::dev::InteractionModeEnum mode) override;
+
+    /**
+     * @brief Sets the interaction modes of a subset of joints.
+     * @param n_joints Number of joints.
+     * @param joints Array of joint indices.
+     * @param modes Array of interaction modes to set.
+     * @return true if the modes were successfully set, false otherwise.
+     * @note The interaction mode is not implemented in this driver, so it always returns false.
+     */
+    bool
+    setInteractionModes(int n_joints, int* joints, yarp::dev::InteractionModeEnum* modes) override;
+
+    /**
+     * @brief Sets the interaction modes of all joints.
+     * @param modes Array of interaction modes to set.
+     * @return true if the modes were successfully set, false otherwise.
+     * @note The interaction mode is not implemented in this driver, so it always returns false.
+     */
+    bool setInteractionModes(yarp::dev::InteractionModeEnum* modes) override;
 
 private:
     struct Impl;
