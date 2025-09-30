@@ -15,6 +15,9 @@ if(NOT Catch2_FOUND)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
+# Find YARP robotinterface
+find_package(YARP_robotinterface REQUIRED)
+
 # Get YARP data install directory
 get_property(YARP_DATA_INSTALL_DIR TARGET YARP::YARP_os PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
 list(GET YARP_DATA_INSTALL_DIR 0 YARP_DATA_INSTALL_DIR_FULL)
@@ -38,9 +41,6 @@ target_compile_definitions(HardwareInTheLoopTest
     CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR}"
     YARP_DATA_INSTALL_DIR_FULL="${YARP_DATA_INSTALL_DIR_FULL}"
 )
-
-# Enable testing
-enable_testing()
 
 # Note: This test requires hardware to be connected
 # It should be run manually, not in CI

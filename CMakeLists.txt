@@ -77,6 +77,7 @@ add_subdirectory(device)
 # Add tests if BUILD_TESTING is enabled
 option(BUILD_TESTING "Build the testing tree." OFF)
 if(BUILD_TESTING)
+    enable_testing()
     add_subdirectory(test)
 endif()
 
