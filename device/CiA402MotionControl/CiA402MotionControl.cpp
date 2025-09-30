@@ -13,6 +13,7 @@
 
 // STD
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -270,6 +271,11 @@ struct CiA402MotionControl::Impl
     PositionProfileState ppState;
 
     bool opRequested{false}; // true after the first run() call
+
+    // ------------- runtime profiling (run() duration and 5s average) -------------
+    std::chrono::steady_clock::time_point avgWindowStart{std::chrono::steady_clock::now()};
+    double runTimeAccumSec{0.0};
+    std::size_t runTimeSamples{0};
 
     /** Dummy interaction mode for all the joints */
     yarp::dev::InteractionModeEnum dummyInteractionMode{
@@ -2255,6 +2261,7 @@ bool CiA402MotionControl::close()
 void CiA402MotionControl::run()
 {
     constexpr auto logPrefix = "[run]";
+    const auto tStart = std::chrono::steady_clock::now();
 
     /* ------------------------------------------------------------------
      * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
@@ -2407,6 +2414,39 @@ void CiA402MotionControl::run()
             m_impl->controlModeState.active[j] = newActive;
             m_impl->controlModeState.prevCstFlavor[j] = m_impl->controlModeState.cstFlavor[j];
         }
+    }
+
+    // ---- profiling: compute per-call duration and log 30s average ----
+    constexpr double printingIntervalSec = 30.0;
+    const auto tEnd = std::chrono::steady_clock::now();
+    const double dtSec
+        = std::chrono::duration_cast<std::chrono::duration<double>>(tEnd - tStart).count();
+    m_impl->runTimeAccumSec += dtSec;
+    m_impl->runTimeSamples += 1;
+    const auto windowSec
+        = std::chrono::duration_cast<std::chrono::duration<double>>(tEnd - m_impl->avgWindowStart)
+              .count();
+    if (windowSec >= printingIntervalSec)
+    {
+        const double avgMs
+            = (m_impl->runTimeSamples > 0)
+                  ? (m_impl->runTimeAccumSec / static_cast<double>(m_impl->runTimeSamples)) * 1000.0
+                  : 0.0;
+        yCInfoThrottle(CIA402,
+                       printingIntervalSec,
+                       "%s %.1fs window: avg run() time = %.3f ms (frequency=%.1f Hz) over %zu "
+                       "cycles (window=%.1fs) - Expected period=%.3f ms (%.1f Hz)",
+                       logPrefix,
+                       printingIntervalSec,
+                       avgMs,
+                       (m_impl->runTimeSamples > 0) ? (1000.0 / avgMs) : 0.0,
+                       m_impl->runTimeSamples,
+                       windowSec,
+                       this->getPeriod() * 1000.0,
+                       1.0 / this->getPeriod());
+        m_impl->runTimeAccumSec = 0.0;
+        m_impl->runTimeSamples = 0;
+        m_impl->avgWindowStart = tEnd;
     }
 }
 
