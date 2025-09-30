@@ -72,6 +72,9 @@ struct CiA402MotionControl::Impl
     // EtherCat manager
     ::CiA402::EthercatManager ethercatManager;
 
+    // mutex to protect the run and the stop
+    std::mutex CiA402MotionControlMutex;
+
     // Constants (unit conversions used throughout)
     static constexpr double MICROSECONDS_TO_SECONDS = 1e-6; // µs → s
     // Device timestamp wraps every ~42.949672 s (spec: (2^32 - 1)/100 µs)
@@ -2244,8 +2247,10 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 //  close()  —  stop the thread & release the NIC
 bool CiA402MotionControl::close()
 {
+    std::lock_guard<std::mutex> closeGuard(m_impl->CiA402MotionControlMutex);
+    this->suspend();
     this->stop(); // PeriodicThread → graceful stop
-    yCInfo(CIA402, "%s: EtheCAT master closed", Impl::kClassName.data());
+    yCInfo(CIA402, "%s: EtheCAT master closed.", Impl::kClassName.data());
     return true;
 }
 
@@ -2262,6 +2267,9 @@ void CiA402MotionControl::run()
 {
     constexpr auto logPrefix = "[run]";
     const auto tStart = std::chrono::steady_clock::now();
+
+    // lock the mutex
+    std::lock_guard<std::mutex> runGuard(m_impl->CiA402MotionControlMutex);
 
     /* ------------------------------------------------------------------
      * 1.  APPLY USER-REQUESTED CONTROL MODES (CiA-402 power machine)
