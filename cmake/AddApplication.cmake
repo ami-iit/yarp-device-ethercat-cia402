@@ -34,7 +34,7 @@ function(add_application)
   target_compile_definitions(${name} PRIVATE -D_USE_MATH_DEFINES)
 
   set_target_properties(${name} PROPERTIES
-      OUTPUT_NAME "${PROJECT_NAME}-${name}"
+      OUTPUT_NAME "yarp-cia402-${name}"
       VERSION ${PROJECT_VERSION})
 
   target_link_libraries(${name} PRIVATE ${link_libraries})
