@@ -5,7 +5,9 @@
 #include <CiA402/LogComponent.h>
 
 // std
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <thread>
 // yarp
 #include <yarp/os/LogStream.h>
@@ -381,24 +383,55 @@ EthercatManager::Error EthercatManager::sendReceive() noexcept
     {
         return Error::NotInitialized;
     }
+    constexpr int kImmediateRetries = 3;
+
     // Perform cyclic process data exchange with thread safety. In SAFE-OP, inputs
     // can still be exchanged but outputs are not applied; allow a best-effort
     // exchange so that configuration code can probe PDOs.
     std::lock_guard<std::mutex> lk(m_ioMtx);
-    ecx_send_processdata(&m_ctx);
-    m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
-    if (!m_isOperational)
-    {
-        // In SAFE-OP there is no strict WKC expectation; treat any receive as success
-        return (m_lastWkc >= 0) ? Error::NoError : Error::PdoExchangeFailed;
-    }
-    if (m_lastWkc >= m_expectedWkc)
-        return Error::NoError;
 
-    // quick retry once: re-read state and try a short receive
-    ecx_readstate(&m_ctx);
-    m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
-    return (m_lastWkc >= m_expectedWkc) ? Error::NoError : Error::PdoExchangeFailed;
+    auto sendReceiveOnce = [&]() {
+        ecx_send_processdata(&m_ctx);
+        m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
+    };
+
+    for (int attempt = 0; attempt < kImmediateRetries; ++attempt)
+    {
+        sendReceiveOnce();
+
+        if (!m_isOperational)
+        {
+            // In SAFE-OP there is no strict WKC expectation; treat any receive as success
+            return (m_lastWkc >= 0) ? Error::NoError : Error::PdoExchangeFailed;
+        }
+
+        if (m_lastWkc >= m_expectedWkc)
+        {
+            m_consecutivePdoErrors = 0;
+            return Error::NoError;
+        }
+    }
+
+    // Too many consecutive failures → attempt state-based recovery.
+    if (m_consecutivePdoErrors < std::numeric_limits<int>::max())
+    {
+        ++m_consecutivePdoErrors;
+    }
+
+    // Escalate by requesting the monitor thread to intervene after repeated failures.
+    constexpr int kRecoveryThreshold = 2;
+    if (m_consecutivePdoErrors >= kRecoveryThreshold)
+    {
+        m_ctx.grouplist[0].docheckstate = 1;
+        yCWarning(CIA402,
+                  "%s: sendReceive: WKC=%d expected=%d (consecutive=%d) → scheduling recovery",
+                  m_kClassName.data(),
+                  m_lastWkc,
+                  m_expectedWkc,
+                  m_consecutivePdoErrors);
+    }
+
+    return Error::PdoExchangeFailed;
 }
 
 EthercatManager::Error EthercatManager::goOperational() noexcept
@@ -438,6 +471,7 @@ EthercatManager::Error EthercatManager::goOperational() noexcept
     m_runWatch = true;
     m_watchThread = std::thread(&EthercatManager::errorMonitorLoop, this);
     m_isOperational = true;
+    m_consecutivePdoErrors = 0;
     yCInfo(CIA402,"%s: EtherCAT: ring is OPERATIONAL", m_kClassName.data());
     return Error::NoError;
 }
@@ -479,6 +513,7 @@ EthercatManager::Error EthercatManager::goPreOp() noexcept
     }
 
     m_isOperational = false;
+    m_consecutivePdoErrors = 0;
     yCInfo(CIA402,"%s: EtherCAT: ring is PRE-OP", m_kClassName.data());
     return Error::NoError;
 }
@@ -530,21 +565,160 @@ TxView EthercatManager::getTxView(int slaveIdx) const noexcept
 void EthercatManager::errorMonitorLoop() noexcept
 {
     using namespace std::chrono_literals;
+    constexpr auto baseSleep = 50ms;
+    constexpr auto maxSleep = 500ms;
+    auto sleepDuration = baseSleep;
+
     while (m_runWatch.load())
     {
+        bool shouldCheck = false;
         {
             std::lock_guard<std::mutex> lk(m_ioMtx);
+            shouldCheck = m_isOperational
+                          && ((m_lastWkc < m_expectedWkc)
+                              || m_ctx.grouplist[0].docheckstate != 0);
+        }
+
+        if (!shouldCheck)
+        {
+            std::this_thread::sleep_for(baseSleep);
+            continue;
+        }
+
+        bool actionsPerformed = false;
+        bool recoveredAny = false;
+
+        {
+            std::lock_guard<std::mutex> lk(m_ioMtx);
+
             ecx_readstate(&m_ctx);
+
             for (int s = 1; s <= m_ctx.slavecount; ++s)
             {
-                if (m_ctx.slavelist[s].state != EC_STATE_OPERATIONAL)
+                ec_slavet& sl = m_ctx.slavelist[s];
+
+                if (sl.state == EC_STATE_OPERATIONAL)
                 {
-                    m_ctx.slavelist[s].state = EC_STATE_OPERATIONAL;
+                    sl.islost = 0;
+                    continue;
+                }
+
+                actionsPerformed = true;
+
+                yCWarning(CIA402,
+                          "%s: monitor: slave %d '%s' state=0x%02X AL=0x%04X islost=%d",
+                          m_kClassName.data(),
+                          s,
+                          sl.name,
+                          sl.state,
+                          sl.ALstatuscode,
+                          sl.islost);
+
+                if ((sl.state & EC_STATE_ERROR) != 0)
+                {
+                    sl.state = EC_STATE_SAFE_OP + EC_STATE_ACK;
                     ecx_writestate(&m_ctx, s);
+                    ecx_statecheck(&m_ctx, s, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE);
+                }
+
+                if (sl.state == EC_STATE_SAFE_OP)
+                {
+                    sl.state = EC_STATE_OPERATIONAL;
+                    ecx_writestate(&m_ctx, s);
+                    ecx_statecheck(&m_ctx, s, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+                }
+
+                if (sl.state != EC_STATE_OPERATIONAL)
+                {
+                    if (sl.state == EC_STATE_NONE)
+                    {
+                        sl.islost = 1;
+                    }
+
+                    int rc = 0;
+                    if (sl.islost)
+                    {
+                        yCWarning(CIA402,
+                                  "%s: monitor: attempting recover on slave %d '%s'",
+                                  m_kClassName.data(),
+                                  s,
+                                  sl.name);
+                        rc = ecx_recover_slave(&m_ctx, static_cast<uint16>(s), EC_TIMEOUTRET3);
+                    }
+                    else
+                    {
+                        yCWarning(CIA402,
+                                  "%s: monitor: attempting reconfig on slave %d '%s'",
+                                  m_kClassName.data(),
+                                  s,
+                                  sl.name);
+                        rc = ecx_reconfig_slave(&m_ctx, static_cast<uint16>(s), EC_TIMEOUTRET3);
+                    }
+
+                    if (rc > 0)
+                    {
+                        sl.islost = 0;
+                        sl.state = EC_STATE_OPERATIONAL;
+                        ecx_writestate(&m_ctx, s);
+                        ecx_statecheck(&m_ctx, s, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+                    }
+                    else
+                    {
+                        sl.islost = 1;
+                    }
+                }
+
+                if (sl.state == EC_STATE_OPERATIONAL)
+                {
+                    recoveredAny = true;
+                    yCInfo(CIA402,
+                           "%s: monitor: slave %d '%s' restored to OP",
+                           m_kClassName.data(),
+                           s,
+                           sl.name);
+                }
+                else
+                {
+                    yCError(CIA402,
+                            "%s: monitor: slave %d '%s' still not OP (state=0x%02X AL=0x%04X)",
+                            m_kClassName.data(),
+                            s,
+                            sl.name,
+                            sl.state,
+                            sl.ALstatuscode);
                 }
             }
+
+            if (actionsPerformed)
+            {
+                ecx_send_processdata(&m_ctx);
+                m_lastWkc = ecx_receive_processdata(&m_ctx, m_pdoTimeoutUs);
+                if (m_lastWkc >= m_expectedWkc)
+                {
+                    recoveredAny = true;
+                }
+            }
+
+            if (m_ctx.grouplist[0].docheckstate)
+            {
+                m_ctx.grouplist[0].docheckstate = 0;
+            }
         }
-        std::this_thread::sleep_for(10ms);
+
+        if (recoveredAny)
+        {
+            sleepDuration = baseSleep;
+        }
+        else if (actionsPerformed)
+        {
+            sleepDuration = std::min(sleepDuration * 2, maxSleep);
+        }
+        else
+        {
+            sleepDuration = baseSleep;
+        }
+
+        std::this_thread::sleep_for(sleepDuration);
     }
 }
 
