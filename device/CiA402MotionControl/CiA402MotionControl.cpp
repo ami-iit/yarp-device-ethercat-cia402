@@ -925,22 +925,23 @@ struct CiA402MotionControl::Impl
                     rx->Controlword |= (1u << 5); // Change set immediately
                     rx->Controlword &= ~(1u << 4); // make sure New set-point is low first
                     posLatched[j] = true;
-                    // seed target with current position until user commands a move
-                    auto tx = this->ethercatManager.getTxView(s);
-                    int32_t actualCounts = this->invertedMotionSenseDirection[j]
-                                               ? -setPoints.targetCounts[j]
-                                               : setPoints.targetCounts[j];
-                    if (tx.has(CiA402::TxField::Position6064))
-                    {
-                        actualCounts = tx.get<int32_t>(CiA402::TxField::Position6064, actualCounts);
-                    }
 
-                    rx->TargetPosition = actualCounts;
+                    // compute seed from current measured joint angle
+                    const double currentJointDeg = this->variables.jointPositions[j];
+                    const int32_t seedStoreCounts
+                        = this->jointDegToTargetCounts(j, currentJointDeg);
 
-                    const int32_t storedCounts
-                        = this->invertedMotionSenseDirection[j] ? -actualCounts : actualCounts;
-                    setPoints.targetCounts[j] = storedCounts;
-                    setPoints.jointPositionsDeg[j] = this->targetCountsToJointDeg(j, actualCounts);
+                    // Apply motion-sense inversion: counts stored in the drive follow the loop
+                    // shaft.
+                    const int32_t seedDriveCounts = this->invertedMotionSenseDirection[j]
+                                                        ? -seedStoreCounts
+                                                        : seedStoreCounts;
+
+                    // sync drive position (0x6064) to current position
+                    rx->TargetPosition = seedDriveCounts;
+
+                    setPoints.targetCounts[j] = seedStoreCounts;
+                    setPoints.jointPositionsDeg[j] = currentJointDeg;
                     setPoints.isRelative[j] = false;
 
                     if (!setPoints.hasPosSP[j] && !setPoints.pulseHi[j])
@@ -1870,6 +1871,22 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
                                          "inverted_motion_sense_direction",
                                          m_impl->invertedMotionSenseDirection))
         return false;
+
+    auto vecBoolToString = [](const std::vector<bool>& v) -> std::string {
+        std::string s;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            s += (v[i] ? "true" : "false");
+            if (i + 1 < v.size())
+                s += ", ";
+        }
+        return s;
+    };
+
+    yCDebug(CIA402,
+            "%s: inverted_motion_sense_direction = [%s]",
+            logPrefix,
+            vecBoolToString(m_impl->invertedMotionSenseDirection).c_str());
 
     // ---------------------------------------------------------------------
     // Initialize the EtherCAT manager (ring in SAFE‑OP)
@@ -3444,6 +3461,20 @@ bool CiA402MotionControl::setRefAcceleration(int j, double accDegS2)
     if (accDegS2 < 0.0)
     {
         accDegS2 = -accDegS2;
+    }
+
+    // saturate to maximum allowed 10 deg/s^2
+    constexpr double maxAcc = 10.0;
+    if (accDegS2 > maxAcc)
+    {
+        yCWarning(CIA402,
+                  "%s: setRefAcceleration: joint %d: acceleration %.2f deg/s^2 too high, "
+                  "saturating to %.2f deg/s^2",
+                  Impl::kClassName.data(),
+                  j,
+                  accDegS2,
+                  maxAcc);
+        accDegS2 = maxAcc;
     }
 
     // Only touch SDOs if PP is ACTIVE
