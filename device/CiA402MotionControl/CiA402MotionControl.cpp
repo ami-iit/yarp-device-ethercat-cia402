@@ -925,7 +925,28 @@ struct CiA402MotionControl::Impl
                     rx->Controlword |= (1u << 5); // Change set immediately
                     rx->Controlword &= ~(1u << 4); // make sure New set-point is low first
                     posLatched[j] = true;
-                    // no command until user calls positionMove/relativeMove
+                    // seed target with current position until user commands a move
+                    auto tx = this->ethercatManager.getTxView(s);
+                    int32_t actualCounts = this->invertedMotionSenseDirection[j]
+                                               ? -setPoints.targetCounts[j]
+                                               : setPoints.targetCounts[j];
+                    if (tx.has(CiA402::TxField::Position6064))
+                    {
+                        actualCounts = tx.get<int32_t>(CiA402::TxField::Position6064, actualCounts);
+                    }
+
+                    rx->TargetPosition = actualCounts;
+
+                    const int32_t storedCounts
+                        = this->invertedMotionSenseDirection[j] ? -actualCounts : actualCounts;
+                    setPoints.targetCounts[j] = storedCounts;
+                    setPoints.jointPositionsDeg[j] = this->targetCountsToJointDeg(j, actualCounts);
+                    setPoints.isRelative[j] = false;
+
+                    if (!setPoints.hasPosSP[j] && !setPoints.pulseHi[j])
+                    {
+                        setPoints.pulseHi[j] = true; // sync drive target to current position
+                    }
                 } else
                 {
                     // (A) Always assert bit 5 in PP
@@ -939,6 +960,7 @@ struct CiA402MotionControl::Impl
                     }
 
                     // (C) New set-point pending? write 0x607A and raise bit4
+                    int32_t targetPositionCounts = 0;
                     if (setPoints.hasPosSP[j] || setPoints.pulseHi[j])
                     {
                         // Absolute/Relative selection (CW bit 6)
@@ -948,9 +970,9 @@ struct CiA402MotionControl::Impl
                             rx->Controlword &= ~(1u << 6);
 
                         // Target position (0x607A)
-                        rx->TargetPosition = this->invertedMotionSenseDirection[j]
-                                                 ? -setPoints.targetCounts[j]
-                                                 : setPoints.targetCounts[j];
+                        targetPositionCounts = this->invertedMotionSenseDirection[j]
+                                                   ? -setPoints.targetCounts[j]
+                                                   : setPoints.targetCounts[j];
 
                         // New set-point pulse (rising edge)
                         rx->Controlword |= (1u << 4);
@@ -959,7 +981,27 @@ struct CiA402MotionControl::Impl
                         setPoints.hasPosSP[j] = false;
                         setPoints.pulseHi[j] = false;
                         setPoints.pulseCoolDown[j] = true;
+                    } else
+                    {
+                        auto tx = this->ethercatManager.getTxView(s);
+                        targetPositionCounts = this->invertedMotionSenseDirection[j]
+                                                   ? -setPoints.targetCounts[j]
+                                                   : setPoints.targetCounts[j];
+                        if (tx.has(CiA402::TxField::Position6064))
+                        {
+                            targetPositionCounts = tx.get<int32_t>(CiA402::TxField::Position6064,
+                                                                   targetPositionCounts);
+                        }
+
+                        setPoints.targetCounts[j] = this->invertedMotionSenseDirection[j]
+                                                        ? -targetPositionCounts
+                                                        : targetPositionCounts;
+                        setPoints.jointPositionsDeg[j]
+                            = this->targetCountsToJointDeg(j, targetPositionCounts);
+                        setPoints.isRelative[j] = false;
                     }
+
+                    rx->TargetPosition = targetPositionCounts;
                 }
             }
 
@@ -2403,7 +2445,8 @@ void CiA402MotionControl::run()
                 || newActive == VOCAB_CM_FORCE_IDLE)
             {
                 m_impl->setPoints.reset(j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j]
+                    = m_impl->currLatched[j] = false;
                 if (hwInhibit)
                 {
                     m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
