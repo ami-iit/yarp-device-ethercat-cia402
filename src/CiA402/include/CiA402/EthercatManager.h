@@ -355,6 +355,7 @@ private:
 
     int m_lastWkc{0}; ///< Last working counter.
     int m_expectedWkc{0}; ///< Expected working counter.
+    int m_consecutivePdoErrors{0}; ///< Number of consecutive PDO failures.
     char m_ioMap[4096]{}; ///< SOEM IO map buffer (shared).
     int m_pdoTimeoutUs{EC_TIMEOUTRET}; ///< Receive timeout for process data.
 
