@@ -925,7 +925,29 @@ struct CiA402MotionControl::Impl
                     rx->Controlword |= (1u << 5); // Change set immediately
                     rx->Controlword &= ~(1u << 4); // make sure New set-point is low first
                     posLatched[j] = true;
-                    // no command until user calls positionMove/relativeMove
+
+                    // compute seed from current measured joint angle
+                    const double currentJointDeg = this->variables.jointPositions[j];
+                    const int32_t seedStoreCounts
+                        = this->jointDegToTargetCounts(j, currentJointDeg);
+
+                    // Apply motion-sense inversion: counts stored in the drive follow the loop
+                    // shaft.
+                    const int32_t seedDriveCounts = this->invertedMotionSenseDirection[j]
+                                                        ? -seedStoreCounts
+                                                        : seedStoreCounts;
+
+                    // sync drive position (0x6064) to current position
+                    rx->TargetPosition = seedDriveCounts;
+
+                    setPoints.targetCounts[j] = seedStoreCounts;
+                    setPoints.jointPositionsDeg[j] = currentJointDeg;
+                    setPoints.isRelative[j] = false;
+
+                    if (!setPoints.hasPosSP[j] && !setPoints.pulseHi[j])
+                    {
+                        setPoints.pulseHi[j] = true; // sync drive target to current position
+                    }
                 } else
                 {
                     // (A) Always assert bit 5 in PP
@@ -939,6 +961,7 @@ struct CiA402MotionControl::Impl
                     }
 
                     // (C) New set-point pending? write 0x607A and raise bit4
+                    int32_t targetPositionCounts = 0;
                     if (setPoints.hasPosSP[j] || setPoints.pulseHi[j])
                     {
                         // Absolute/Relative selection (CW bit 6)
@@ -948,9 +971,9 @@ struct CiA402MotionControl::Impl
                             rx->Controlword &= ~(1u << 6);
 
                         // Target position (0x607A)
-                        rx->TargetPosition = this->invertedMotionSenseDirection[j]
-                                                 ? -setPoints.targetCounts[j]
-                                                 : setPoints.targetCounts[j];
+                        targetPositionCounts = this->invertedMotionSenseDirection[j]
+                                                   ? -setPoints.targetCounts[j]
+                                                   : setPoints.targetCounts[j];
 
                         // New set-point pulse (rising edge)
                         rx->Controlword |= (1u << 4);
@@ -959,7 +982,27 @@ struct CiA402MotionControl::Impl
                         setPoints.hasPosSP[j] = false;
                         setPoints.pulseHi[j] = false;
                         setPoints.pulseCoolDown[j] = true;
+                    } else
+                    {
+                        auto tx = this->ethercatManager.getTxView(s);
+                        targetPositionCounts = this->invertedMotionSenseDirection[j]
+                                                   ? -setPoints.targetCounts[j]
+                                                   : setPoints.targetCounts[j];
+                        if (tx.has(CiA402::TxField::Position6064))
+                        {
+                            targetPositionCounts = tx.get<int32_t>(CiA402::TxField::Position6064,
+                                                                   targetPositionCounts);
+                        }
+
+                        setPoints.targetCounts[j] = this->invertedMotionSenseDirection[j]
+                                                        ? -targetPositionCounts
+                                                        : targetPositionCounts;
+                        setPoints.jointPositionsDeg[j]
+                            = this->targetCountsToJointDeg(j, targetPositionCounts);
+                        setPoints.isRelative[j] = false;
                     }
+
+                    rx->TargetPosition = targetPositionCounts;
                 }
             }
 
@@ -1829,6 +1872,22 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
                                          m_impl->invertedMotionSenseDirection))
         return false;
 
+    auto vecBoolToString = [](const std::vector<bool>& v) -> std::string {
+        std::string s;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            s += (v[i] ? "true" : "false");
+            if (i + 1 < v.size())
+                s += ", ";
+        }
+        return s;
+    };
+
+    yCDebug(CIA402,
+            "%s: inverted_motion_sense_direction = [%s]",
+            logPrefix,
+            vecBoolToString(m_impl->invertedMotionSenseDirection).c_str());
+
     // ---------------------------------------------------------------------
     // Initialize the EtherCAT manager (ring in SAFE‑OP)
     // ---------------------------------------------------------------------
@@ -2403,7 +2462,8 @@ void CiA402MotionControl::run()
                 || newActive == VOCAB_CM_FORCE_IDLE)
             {
                 m_impl->setPoints.reset(j);
-                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->currLatched[j] = false;
+                m_impl->velLatched[j] = m_impl->trqLatched[j] = m_impl->posLatched[j]
+                    = m_impl->currLatched[j] = false;
                 if (hwInhibit)
                 {
                     m_impl->controlModeState.target[j] = VOCAB_CM_IDLE;
@@ -3401,6 +3461,20 @@ bool CiA402MotionControl::setRefAcceleration(int j, double accDegS2)
     if (accDegS2 < 0.0)
     {
         accDegS2 = -accDegS2;
+    }
+
+    // saturate to maximum allowed 10 deg/s^2
+    constexpr double maxAcc = 10.0;
+    if (accDegS2 > maxAcc)
+    {
+        yCWarning(CIA402,
+                  "%s: setRefAcceleration: joint %d: acceleration %.2f deg/s^2 too high, "
+                  "saturating to %.2f deg/s^2",
+                  Impl::kClassName.data(),
+                  j,
+                  accDegS2,
+                  maxAcc);
+        accDegS2 = maxAcc;
     }
 
     // Only touch SDOs if PP is ACTIVE
