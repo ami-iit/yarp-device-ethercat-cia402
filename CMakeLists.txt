@@ -74,6 +74,11 @@ add_subdirectory(src)
 add_subdirectory(utils)
 add_subdirectory(device)
 
-# add_subdirectory(test)
+# Add tests if BUILD_TESTING is enabled
+option(BUILD_TESTING "Build the testing tree." OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(test)
+endif()
 
 include(AddUninstallTarget)

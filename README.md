@@ -66,6 +66,47 @@ To run the plugin with a specific configuration:
 yarprobotinterface --config config/robot/template_1_motor/config.xml
 ```
 
+## Testing 🧪
+
+This project includes a hardware-in-the-loop test suite built with [Catch2](https://github.com/catchorg/Catch2).
+
+### Building Tests
+
+To build the tests, enable the `BUILD_TESTING` option:
+
+```bash
+cd build
+cmake .. -DBUILD_TESTING=ON
+cmake --build .
+```
+
+### Running Tests
+
+The hardware-in-the-loop test requires actual hardware connected via EtherCAT. For detailed instructions, see [test/HardwareInTheLoopTest/README.md](test/HardwareInTheLoopTest/README.md).
+
+To run the tests:
+
+```bash
+cd build
+# Run all tests labeled as "hardware"
+ctest -L hardware -V
+
+# Or run the test executable directly
+./bin/HardwareInTheLoopTest
+```
+
+**Note**: The test requires network capabilities to access the EtherCAT interface:
+```bash
+sudo setcap cap_net_raw,cap_net_admin+ep ./bin/HardwareInTheLoopTest
+```
+
+The test validates:
+- Device loading and initialization
+- All control interfaces (position, velocity, torque, current)
+- Encoder reading (motor and joint)
+- Control mode switching
+- Setpoint/measurement validation
+
 ## Supported Drives 🛠️
 This plugin has been primarily tested with Synapticon drives. While it may be compatible with other EtherCAT drive models or manufacturers, some modifications might be necessary to ensure proper functionality. This is due to the plugin’s use of a custom Process Data Object (PDO) mapping, which extends beyond the standard CiA402 specification.
 
