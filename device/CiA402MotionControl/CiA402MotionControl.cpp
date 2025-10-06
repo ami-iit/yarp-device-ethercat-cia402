@@ -111,6 +111,10 @@ struct CiA402MotionControl::Impl
     std::vector<double> degSToVel; // multiply deg/s to get device value
     std::vector<bool> invertedMotionSenseDirection; // if true the torque, current, velocity and
                                                     // position have inverted sign
+    bool velocityFilterConfigPending{false};
+    std::vector<bool> velocityFilterEnableCfg;
+    std::vector<uint32_t> velocityFilterCutoffHzCfg;
+    std::string velocityFilterEnableSummary;
     struct Limits
     {
         std::vector<double> maxPositionLimitDeg; // [deg] from 0x607D:1
@@ -777,6 +781,72 @@ struct CiA402MotionControl::Impl
         }
 
         yCInfo(CIA402, "%s successfully read torque values from SDO", logPrefix);
+        return true;
+    }
+
+    bool applyVelocityFilterConfig()
+    {
+        constexpr auto logPrefix = "[applyVelocityFilterConfig]";
+
+        if (!velocityFilterConfigPending)
+        {
+            return true;
+        }
+
+        if (velocityFilterEnableCfg.size() != numAxes
+            || velocityFilterCutoffHzCfg.size() != numAxes)
+        {
+            yCError(CIA402,
+                    "%s velocity filter config size mismatch (enable=%zu cutoff=%zu expected=%zu)",
+                    logPrefix,
+                    velocityFilterEnableCfg.size(),
+                    velocityFilterCutoffHzCfg.size(),
+                    numAxes);
+            return false;
+        }
+
+        for (size_t j = 0; j < numAxes; ++j)
+        {
+            const int slaveIdx = firstSlave + static_cast<int>(j);
+            const uint8_t filterType = velocityFilterEnableCfg[j] ? 1u : 0u;
+
+            auto typeErr = ethercatManager.writeSDO<uint8_t>(slaveIdx, 0x2021, 0x01, filterType);
+            if (typeErr != ::CiA402::EthercatManager::Error::NoError)
+            {
+                yCError(CIA402,
+                        "%s failed to write velocity filter type (0x2021:01) for axis %zu",
+                        logPrefix,
+                        j);
+                return false;
+            }
+
+            auto cutoffErr = ethercatManager.writeSDO<uint32_t>(slaveIdx,
+                                                                0x2021,
+                                                                0x02,
+                                                                velocityFilterCutoffHzCfg[j]);
+            if (cutoffErr != ::CiA402::EthercatManager::Error::NoError)
+            {
+                yCError(CIA402,
+                        "%s failed to write velocity filter cutoff (0x2021:02) for axis %zu",
+                        logPrefix,
+                        j);
+                return false;
+            }
+
+            yCDebug(CIA402,
+                    "%s j=%zu velocity feedback filter type=%u cutoff=%u Hz",
+                    logPrefix,
+                    j,
+                    static_cast<unsigned>(filterType),
+                    velocityFilterCutoffHzCfg[j]);
+        }
+
+        yCInfo(CIA402,
+               "%s configured velocity feedback filters (enable=%s)",
+               logPrefix,
+               velocityFilterEnableSummary.c_str());
+
+        velocityFilterConfigPending = false;
         return true;
     }
 
@@ -1862,14 +1932,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
 
     const bool hasVelocityFilterEnable = cfg.check("velocity_filter_enable");
     const bool hasVelocityFilterCutoff = cfg.check("velocity_filter_cutoff_hz");
-    std::vector<bool> velocityFilterEnable;
-    std::vector<double> velocityFilterCutoffHz;
-
     if (hasVelocityFilterEnable || hasVelocityFilterCutoff)
     {
         constexpr double kCutoffDefaultHz = 500.0;
-        velocityFilterEnable.assign(m_impl->numAxes, false);
-        velocityFilterCutoffHz.assign(m_impl->numAxes, kCutoffDefaultHz);
+        std::vector<bool> velocityFilterEnable(m_impl->numAxes, false);
+        std::vector<double> velocityFilterCutoffHz(m_impl->numAxes, kCutoffDefaultHz);
 
         if (hasVelocityFilterEnable)
         {
@@ -1896,10 +1963,11 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
         constexpr double kCutoffMinHz = 5.0;
         constexpr double kCutoffMaxHz = 2000.0;
 
+        m_impl->velocityFilterEnableCfg = velocityFilterEnable;
+        m_impl->velocityFilterCutoffHzCfg.resize(m_impl->numAxes);
+
         for (size_t j = 0; j < m_impl->numAxes; ++j)
         {
-            const int slaveIdx = m_impl->firstSlave + static_cast<int>(j);
-
             const double requestedHz = velocityFilterCutoffHz[j];
             if (!std::isfinite(requestedHz))
             {
@@ -1918,43 +1986,17 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
                           clampedHz);
             }
 
-            const uint32_t cutoffHz = static_cast<uint32_t>(std::llround(clampedHz));
-            const uint8_t filterType = velocityFilterEnable[j] ? 1u : 0u;
-
-            auto typeErr
-                = m_impl->ethercatManager.writeSDO<uint8_t>(slaveIdx, 0x2021, 0x01, filterType);
-            if (typeErr != ::CiA402::EthercatManager::Error::NoError)
-            {
-                yCError(CIA402,
-                        "%s failed to write velocity filter type (0x2021:01) for axis %zu",
-                        logPrefix,
-                        j);
-                return false;
-            }
-
-            auto cutoffErr
-                = m_impl->ethercatManager.writeSDO<uint32_t>(slaveIdx, 0x2021, 0x02, cutoffHz);
-            if (cutoffErr != ::CiA402::EthercatManager::Error::NoError)
-            {
-                yCError(CIA402,
-                        "%s failed to write velocity filter cutoff (0x2021:02) for axis %zu",
-                        logPrefix,
-                        j);
-                return false;
-            }
-
-            yCDebug(CIA402,
-                    "%s j=%zu velocity feedback filter type=%u cutoff=%u Hz",
-                    logPrefix,
-                    j,
-                    static_cast<unsigned>(filterType),
-                    cutoffHz);
+            m_impl->velocityFilterCutoffHzCfg[j] = static_cast<uint32_t>(std::llround(clampedHz));
         }
 
-        yCInfo(CIA402,
-               "%s configured velocity feedback filters (enable=%s)",
-               logPrefix,
-               vecBoolToString(velocityFilterEnable).c_str());
+        m_impl->velocityFilterEnableSummary = vecBoolToString(velocityFilterEnable);
+        m_impl->velocityFilterConfigPending = true;
+    } else
+    {
+        m_impl->velocityFilterConfigPending = false;
+        m_impl->velocityFilterEnableCfg.clear();
+        m_impl->velocityFilterCutoffHzCfg.clear();
+        m_impl->velocityFilterEnableSummary.clear();
     }
 
     for (size_t j = 0; j < m_impl->numAxes; ++j)
@@ -2181,6 +2223,12 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     if (!m_impl->readTorqueValues())
     {
         yCError(CIA402, "%s failed to read torque values from SDO", logPrefix);
+        return false;
+    }
+
+    if (!m_impl->applyVelocityFilterConfig())
+    {
+        yCError(CIA402, "%s failed to apply velocity filter configuration", logPrefix);
         return false;
     }
 
