@@ -48,6 +48,8 @@ Notes:
 | Gear ratio denominator        | 0x6091:02 | UINT32  | Read  | Motor:Load gear ratio (denominator) | Defaults to 1               |
 | Profile velocity              | 0x6081:00 | INT32   | R/W   | PP profile parameter                | Units per drive             |
 | Profile acceleration          | 0x6083:00 | INT32   | R/W   | PP profile parameter                | Units per drive             |
+| Velocity feedback filter type | 0x2021:01 | UINT8   | R/W   | Enable/disable velocity LPF         | 0=off, 1=1st order          |
+| Velocity feedback cutoff      | 0x2021:02 | UINT32  | R/W   | Velocity LPF cutoff frequency       | Hz, 5–2000, default 500     |
 | Rated motor torque            | 0x6076:00 | INT16/* | Read  | Scale for 0x6071                    | Nm, vendor sizing may vary  |
 | Error code                    | 0x603F:00 | UINT16  | Read  | Fault diagnostics                    | Decoded in driver           |
 
