@@ -52,6 +52,18 @@ export YARP_DATA_DIRS=/path/to/install:$YARP_DATA_DIRS
 ### Configuration ⚙️
 The plugin requires a configuration file defining the EtherCAT network and device parameters. An example can be found at: [`config/robot/template_1_motor/config.xml`](config/robot/template_1_motor/config.xml)
 
+#### Real-time thread tuning ⏱️
+When running on a Linux system with a real-time kernel you can opt into deterministic scheduling for the EtherCAT loop by adding the following optional keys to the device configuration:
+
+- `rt_enable` *(bool, default `true`)* — disable to fall back to standard `PeriodicThread` behaviour.
+- `rt_priority` *(int, default `80`)* — POSIX thread priority used when the scheduler supports it.
+- `rt_policy` *(string/int)* — scheduling policy (`fifo`, `rr`, `other`, or a numeric policy value). Only honoured on Linux.
+- `rt_cpu_affinity` *(list of int)* — pin the control loop to one or more CPU cores.
+- `rt_lock_memory` *(bool, default `true`)* — call `mlockall(MCL_CURRENT|MCL_FUTURE)` to minimise page faults.
+- `rt_restore_policy` *(bool, default `true`)* — restore the previous scheduler and affinity when the thread stops.
+
+The defaults target a SCHED_FIFO thread with priority 80 and memory locking. If the kernel refuses a setting (for example due to missing capabilities) the device logs a warning and keeps running in best-effort mode.
+
 ### Setting Up `yarprobotinterface` 🛠️
 To ensure that the `yarprobotinterface` binary has the correct permissions and can locate its dependencies, execute:
 

@@ -13,6 +13,7 @@
 
 // STD
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -1504,15 +1505,15 @@ struct CiA402MotionControl::Impl
 //  CiA402MotionControl  —  ctor / dtor
 
 CiA402MotionControl::CiA402MotionControl(double period, yarp::os::ShouldUseSystemClock useSysClock)
-    : yarp::os::PeriodicThread(period, useSysClock, yarp::os::PeriodicThreadClock::Absolute)
+    : yarp::os::RealTimePeriodicThread(period, useSysClock, yarp::os::PeriodicThreadClock::Absolute)
     , m_impl(std::make_unique<Impl>())
 {
 }
 
 CiA402MotionControl::CiA402MotionControl()
-    : yarp::os::PeriodicThread(0.001 /*1 kHz*/,
-                               yarp::os::ShouldUseSystemClock::Yes,
-                               yarp::os::PeriodicThreadClock::Absolute)
+    : yarp::os::RealTimePeriodicThread(0.001 /*1 kHz*/,
+                                       yarp::os::ShouldUseSystemClock::Yes,
+                                       yarp::os::PeriodicThreadClock::Absolute)
     , m_impl(std::make_unique<Impl>())
 {
 }
@@ -1552,6 +1553,178 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
     this->setPeriod(period);
     yCDebug(CIA402, "%s: using period = %.6f s", logPrefix, period);
+
+    yarp::os::RealTimePeriodicThread::Parameters rtParams = this->realTimeParameters();
+
+    if (cfg.check("rt_enable"))
+    {
+        const auto& v = cfg.find("rt_enable");
+        if (!v.isBool())
+        {
+            yCError(CIA402, "%s: 'rt_enable' must be a bool", logPrefix);
+            return false;
+        }
+        rtParams.enableRealtime = v.asBool();
+    }
+
+    if (cfg.check("rt_priority"))
+    {
+        const auto& v = cfg.find("rt_priority");
+        if (!v.isInt32())
+        {
+            yCError(CIA402, "%s: 'rt_priority' must be an integer", logPrefix);
+            return false;
+        }
+        const int priority = v.asInt32();
+        if (priority < 0)
+        {
+            yCError(CIA402, "%s: 'rt_priority' must be non-negative", logPrefix);
+            return false;
+        }
+        rtParams.priority = priority;
+    }
+
+    if (cfg.check("rt_lock_memory"))
+    {
+        const auto& v = cfg.find("rt_lock_memory");
+        if (!v.isBool())
+        {
+            yCError(CIA402, "%s: 'rt_lock_memory' must be a bool", logPrefix);
+            return false;
+        }
+        rtParams.lockMemory = v.asBool();
+    }
+
+    if (cfg.check("rt_restore_policy"))
+    {
+        const auto& v = cfg.find("rt_restore_policy");
+        if (!v.isBool())
+        {
+            yCError(CIA402, "%s: 'rt_restore_policy' must be a bool", logPrefix);
+            return false;
+        }
+        rtParams.restoreSchedulingOnStop = v.asBool();
+    }
+
+#ifdef __linux__
+    if (cfg.check("rt_policy"))
+    {
+        const auto& v = cfg.find("rt_policy");
+        if (v.isString())
+        {
+            std::string policyStr = v.asString();
+            std::transform(policyStr.begin(),
+                           policyStr.end(),
+                           policyStr.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (policyStr == "fifo")
+            {
+                rtParams.policy = SCHED_FIFO;
+            } else if (policyStr == "rr" || policyStr == "roundrobin")
+            {
+                rtParams.policy = SCHED_RR;
+            } else if (policyStr == "other" || policyStr == "normal")
+            {
+                rtParams.policy = SCHED_OTHER;
+            } else if (policyStr == "inherit")
+            {
+                rtParams.policy = -1;
+            } else
+            {
+                yCError(CIA402,
+                        "%s: unsupported 'rt_policy' value '%s'",
+                        logPrefix,
+                        policyStr.c_str());
+                return false;
+            }
+        } else if (v.isInt32())
+        {
+            rtParams.policy = v.asInt32();
+        } else
+        {
+            yCError(CIA402, "%s: 'rt_policy' must be a string or integer", logPrefix);
+            return false;
+        }
+    }
+#else
+    if (cfg.check("rt_policy"))
+    {
+        yCWarning(CIA402, "%s: 'rt_policy' ignored: realtime scheduling not supported", logPrefix);
+    }
+#endif
+
+    if (cfg.check("rt_cpu_affinity"))
+    {
+        const auto& v = cfg.find("rt_cpu_affinity");
+        if (!v.isList())
+        {
+            yCError(CIA402, "%s: 'rt_cpu_affinity' must be a list of integers", logPrefix);
+            return false;
+        }
+
+        const auto* lst = v.asList();
+        if (!lst)
+        {
+            yCError(CIA402, "%s: internal error parsing 'rt_cpu_affinity'", logPrefix);
+            return false;
+        }
+
+        std::vector<int> affinity;
+        affinity.reserve(static_cast<size_t>(lst->size()));
+        for (int i = 0; i < lst->size(); ++i)
+        {
+            const auto& cpuVal = lst->get(i);
+            if (!cpuVal.isInt32())
+            {
+                yCError(CIA402, "%s: 'rt_cpu_affinity' values must be integers", logPrefix);
+                return false;
+            }
+            const int cpuId = cpuVal.asInt32();
+            if (cpuId < 0)
+            {
+                yCError(CIA402,
+                        "%s: 'rt_cpu_affinity' values must be non-negative (found %d)",
+                        logPrefix,
+                        cpuId);
+                return false;
+            }
+            affinity.push_back(cpuId);
+        }
+        rtParams.cpuAffinity = std::move(affinity);
+    }
+
+    this->setRealTimeParameters(rtParams);
+
+    std::string affinitySummary{"[]"};
+    if (!rtParams.cpuAffinity.empty())
+    {
+        affinitySummary.clear();
+        affinitySummary.push_back('[');
+        for (size_t i = 0; i < rtParams.cpuAffinity.size(); ++i)
+        {
+            affinitySummary.append(std::to_string(rtParams.cpuAffinity[i]));
+            if (i + 1 < rtParams.cpuAffinity.size())
+            {
+                affinitySummary.push_back(',');
+            }
+        }
+        affinitySummary.push_back(']');
+    }
+
+    if (rtParams.enableRealtime)
+    {
+        yCInfo(CIA402,
+               "%s: realtime thread enabled (policy=%d priority=%d lock_memory=%s affinity=%s)",
+               logPrefix,
+               rtParams.policy,
+               rtParams.priority,
+               rtParams.lockMemory ? "true" : "false",
+               affinitySummary.c_str());
+    } else
+    {
+        yCInfo(CIA402, "%s: realtime thread disabled via configuration", logPrefix);
+    }
 
     m_impl->numAxes = static_cast<size_t>(cfg.find("num_axes").asInt32());
     m_impl->firstSlave = cfg.check("first_slave", yarp::os::Value(1)).asInt32();

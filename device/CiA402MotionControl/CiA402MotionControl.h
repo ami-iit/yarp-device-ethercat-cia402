@@ -20,7 +20,8 @@
 #include <yarp/dev/IPositionControl.h>
 #include <yarp/dev/ITorqueControl.h>
 #include <yarp/dev/IVelocityControl.h>
-#include <yarp/os/PeriodicThread.h>
+
+#include "RealTimePeriodicThread.h"
 
 namespace yarp
 {
@@ -33,7 +34,7 @@ namespace dev
  * This class owns the EtherCAT master cycle via yarp::os::PeriodicThread.
  */
 class CiA402MotionControl : public yarp::dev::DeviceDriver,
-                            public yarp::os::PeriodicThread,
+                            public yarp::os::RealTimePeriodicThread,
                             public yarp::dev::IMotorEncoders,
                             public yarp::dev::IEncodersTimed,
                             public yarp::dev::IAxisInfo,

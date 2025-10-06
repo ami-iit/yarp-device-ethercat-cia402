@@ -5,8 +5,8 @@
 add_yarp_device(
     NAME CiA402MotionControl
     TYPE yarp::dev::CiA402MotionControl
-    SOURCES CiA402MotionControl.cpp CiA402StateMachine.cpp
-    PUBLIC_HEADERS CiA402MotionControl.h CiA402StateMachine.h
+    SOURCES CiA402MotionControl.cpp CiA402StateMachine.cpp RealTimePeriodicThread.cpp
+    PUBLIC_HEADERS CiA402MotionControl.h CiA402StateMachine.h RealTimePeriodicThread.h
     PUBLIC_LINK_LIBRARIES
       YARP::YARP_os
       YARP::YARP_dev
