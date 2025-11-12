@@ -64,7 +64,8 @@ enum class TxField : uint8_t
     Enc1Vel2111_03, ///< 0x2111:03 Vendor enc1 velocity
     Enc2Pos2113_02, ///< 0x2113:02 Vendor enc2 position
     Enc2Vel2113_03, ///< 0x2113:03 Vendor enc2 velocity
-    TemperatureDrive ///< 0x2031:01 Temperature (if supported)
+    TemperatureDrive, ///< 0x2031:01 Temperature (if supported)
+    Voltage6079 ///< 0x6079:00 DC link circuit voltage (mV)
 };
 
 /**

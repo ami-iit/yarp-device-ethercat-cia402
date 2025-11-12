@@ -1249,9 +1249,18 @@ struct CiA402MotionControl::Impl
             // OTHER FEEDBACK PROCESSING
             // =====================================================================
 
-            // Accelerations not provided by the drives (would require differentiation)
+            // Joint acceleration not provided by the drives (would require differentiation)
             this->variables.jointAccelerations[j] = 0.0;
-            this->variables.motorAccelerations[j] = 0.0;
+
+            if (tx.has(CiA402::TxField::Voltage6079))
+            {
+                const double dcLinkVoltageMv
+                    = static_cast<double>(tx.get<uint32_t>(CiA402::TxField::Voltage6079, 0));
+                this->variables.motorAccelerations[j] = dcLinkVoltageMv * 1e-3; // store volts
+            } else
+            {
+                this->variables.motorAccelerations[j] = 0.0;
+            }
 
             // --------- Torque feedback (motor → joint conversion) ----------
             // CiA402 torque feedback (0x6077) is always motor-side, per-thousand of rated torque

@@ -204,6 +204,7 @@ EthercatManager::Error EthercatManager::configurePDOMapping(int s)
 
     // temperature
     tryMap(TxField::TemperatureDrive, 0x2031, 0x01, 32); // Drive temperature
+    tryMap(TxField::Voltage6079, 0x6079, 0x00, 32); // DC link circuit voltage (mV)
 
     // Finalize the last TxPDO we were building
     if (!finalizeTx())
