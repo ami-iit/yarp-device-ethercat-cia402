@@ -1256,7 +1256,10 @@ struct CiA402MotionControl::Impl
             {
                 const double dcLinkVoltageMv
                     = static_cast<double>(tx.get<uint32_t>(CiA402::TxField::Voltage6079, 0));
-                this->variables.motorAccelerations[j] = dcLinkVoltageMv * 1e-3; // store volts
+                constexpr double RAD_TO_DEG = 57.2957795130823208768; // 180 / pi
+                const double voltageDeg = (dcLinkVoltageMv * 1e-3) * RAD_TO_DEG;
+                // Hack: store volts as degrees so downstream deg->rad conversion returns volts
+                this->variables.motorAccelerations[j] = voltageDeg;
             } else
             {
                 this->variables.motorAccelerations[j] = 0.0;
