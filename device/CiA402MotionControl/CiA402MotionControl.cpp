@@ -189,13 +189,15 @@ struct CiA402MotionControl::Impl
         std::vector<bool> hasVelSP; // user provided a velocity since entry?
         std::vector<bool> hasCurrentSP; // user provided a current since entry?
 
-        std::vector<double> jointPositionsDeg; // last requested target [deg] joint-side
-        std::vector<int32_t> targetCounts; // computed target for 0x607A (loop-shaft)
-        std::vector<bool> hasPosSP; // a new PP command available this cycle?
+        std::vector<double> ppJointTargetsDeg; // last requested PP target [deg] joint-side
+        std::vector<int32_t> ppTargetCounts; // computed PP target for 0x607A (loop-shaft)
+        std::vector<bool> ppHasPosSP; // a new PP command available this cycle?
+        std::vector<bool> ppIsRelative; // this PP set-point is relative
+        std::vector<bool> ppPulseHi; // drive CW bit4 high this cycle?
+        std::vector<bool> ppPulseCoolDown; // bring bit4 low next
 
-        std::vector<bool> isRelative; // this set-point is relative
-        std::vector<bool> pulseHi; // drive CW bit4 high this cycle?
-        std::vector<bool> pulseCoolDown; // bring bit4 low next
+        std::vector<double> positionDirectJointTargetsDeg; // last CSP request [deg]
+        std::vector<int32_t> positionDirectTargetCounts; // CSP target in loop counts
 
         void resize(std::size_t n)
         {
@@ -206,12 +208,15 @@ struct CiA402MotionControl::Impl
             hasVelSP.assign(n, false);
             hasCurrentSP.assign(n, false);
 
-            jointPositionsDeg.resize(n);
-            targetCounts.resize(n);
-            hasPosSP.assign(n, false);
-            isRelative.assign(n, false);
-            pulseHi.assign(n, false);
-            pulseCoolDown.assign(n, false);
+            ppJointTargetsDeg.resize(n);
+            ppTargetCounts.resize(n);
+            ppHasPosSP.assign(n, false);
+            ppIsRelative.assign(n, false);
+            ppPulseHi.assign(n, false);
+            ppPulseCoolDown.assign(n, false);
+
+            positionDirectJointTargetsDeg.resize(n);
+            positionDirectTargetCounts.resize(n);
         }
 
         void reset()
@@ -223,12 +228,19 @@ struct CiA402MotionControl::Impl
             std::fill(this->hasTorqueSP.begin(), this->hasTorqueSP.end(), false);
             std::fill(this->hasCurrentSP.begin(), this->hasCurrentSP.end(), false);
             std::fill(this->hasVelSP.begin(), this->hasVelSP.end(), false);
-            std::fill(this->jointPositionsDeg.begin(), this->jointPositionsDeg.end(), 0.0);
-            std::fill(this->targetCounts.begin(), this->targetCounts.end(), 0);
-            std::fill(this->hasPosSP.begin(), this->hasPosSP.end(), false);
-            std::fill(this->isRelative.begin(), this->isRelative.end(), false);
-            std::fill(this->pulseHi.begin(), this->pulseHi.end(), false);
-            std::fill(this->pulseCoolDown.begin(), this->pulseCoolDown.end(), false);
+            std::fill(this->ppJointTargetsDeg.begin(), this->ppJointTargetsDeg.end(), 0.0);
+            std::fill(this->ppTargetCounts.begin(), this->ppTargetCounts.end(), 0);
+            std::fill(this->ppHasPosSP.begin(), this->ppHasPosSP.end(), false);
+            std::fill(this->ppIsRelative.begin(), this->ppIsRelative.end(), false);
+            std::fill(this->ppPulseHi.begin(), this->ppPulseHi.end(), false);
+            std::fill(this->ppPulseCoolDown.begin(), this->ppPulseCoolDown.end(), false);
+
+            std::fill(this->positionDirectJointTargetsDeg.begin(),
+                      this->positionDirectJointTargetsDeg.end(),
+                      0.0);
+            std::fill(this->positionDirectTargetCounts.begin(),
+                      this->positionDirectTargetCounts.end(),
+                      0);
         }
 
         void reset(int axis)
@@ -239,13 +251,15 @@ struct CiA402MotionControl::Impl
             this->motorCurrents[axis] = 0.0;
             this->hasTorqueSP[axis] = false;
             this->hasCurrentSP[axis] = false;
-            this->jointPositionsDeg[axis] = 0.0;
-            this->targetCounts[axis] = 0;
+            this->ppJointTargetsDeg[axis] = 0.0;
+            this->ppTargetCounts[axis] = 0;
             this->hasVelSP[axis] = false;
-            this->hasPosSP[axis] = false;
-            this->isRelative[axis] = false;
-            this->pulseHi[axis] = false;
-            this->pulseCoolDown[axis] = false;
+            this->ppHasPosSP[axis] = false;
+            this->ppIsRelative[axis] = false;
+            this->ppPulseHi[axis] = false;
+            this->ppPulseCoolDown[axis] = false;
+            this->positionDirectJointTargetsDeg[axis] = 0.0;
+            this->positionDirectTargetCounts[axis] = 0;
         }
     };
 
@@ -940,13 +954,13 @@ struct CiA402MotionControl::Impl
                     // sync drive position (0x6064) to current position
                     rx->TargetPosition = seedDriveCounts;
 
-                    setPoints.targetCounts[j] = seedStoreCounts;
-                    setPoints.jointPositionsDeg[j] = currentJointDeg;
-                    setPoints.isRelative[j] = false;
+                    setPoints.ppTargetCounts[j] = seedStoreCounts;
+                    setPoints.ppJointTargetsDeg[j] = currentJointDeg;
+                    setPoints.ppIsRelative[j] = false;
 
-                    if (!setPoints.hasPosSP[j] && !setPoints.pulseHi[j])
+                    if (!setPoints.ppHasPosSP[j] && !setPoints.ppPulseHi[j])
                     {
-                        setPoints.pulseHi[j] = true; // sync drive target to current position
+                        setPoints.ppPulseHi[j] = true; // sync drive target to current position
                     }
                 } else
                 {
@@ -954,56 +968,74 @@ struct CiA402MotionControl::Impl
                     rx->Controlword |= (1u << 5);
 
                     // (B) If the previous cycle drove bit4 high, bring it low now (one-shot pulse)
-                    if (setPoints.pulseCoolDown[j])
+                    if (setPoints.ppPulseCoolDown[j])
                     {
                         rx->Controlword &= ~(1u << 4);
-                        setPoints.pulseCoolDown[j] = false;
+                        setPoints.ppPulseCoolDown[j] = false;
                     }
 
                     // (C) New set-point pending? write 0x607A and raise bit4
                     int32_t targetPositionCounts = 0;
-                    if (setPoints.hasPosSP[j] || setPoints.pulseHi[j])
+                    if (setPoints.ppHasPosSP[j] || setPoints.ppPulseHi[j])
                     {
                         // Absolute/Relative selection (CW bit 6)
-                        if (setPoints.isRelative[j])
+                        if (setPoints.ppIsRelative[j])
                             rx->Controlword |= (1u << 6);
                         else
                             rx->Controlword &= ~(1u << 6);
 
                         // Target position (0x607A)
                         targetPositionCounts = this->invertedMotionSenseDirection[j]
-                                                   ? -setPoints.targetCounts[j]
-                                                   : setPoints.targetCounts[j];
+                                                   ? -setPoints.ppTargetCounts[j]
+                                                   : setPoints.ppTargetCounts[j];
 
                         // New set-point pulse (rising edge)
                         rx->Controlword |= (1u << 4);
 
                         // consume the request and arm cooldown to drop bit4 next cycle
-                        setPoints.hasPosSP[j] = false;
-                        setPoints.pulseHi[j] = false;
-                        setPoints.pulseCoolDown[j] = true;
+                        setPoints.ppHasPosSP[j] = false;
+                        setPoints.ppPulseHi[j] = false;
+                        setPoints.ppPulseCoolDown[j] = true;
                     } else
                     {
                         auto tx = this->ethercatManager.getTxView(s);
                         targetPositionCounts = this->invertedMotionSenseDirection[j]
-                                                   ? -setPoints.targetCounts[j]
-                                                   : setPoints.targetCounts[j];
+                                                   ? -setPoints.ppTargetCounts[j]
+                                                   : setPoints.ppTargetCounts[j];
                         if (tx.has(CiA402::TxField::Position6064))
                         {
                             targetPositionCounts = tx.get<int32_t>(CiA402::TxField::Position6064,
                                                                    targetPositionCounts);
                         }
 
-                        setPoints.targetCounts[j] = this->invertedMotionSenseDirection[j]
-                                                        ? -targetPositionCounts
-                                                        : targetPositionCounts;
-                        setPoints.jointPositionsDeg[j]
+                        setPoints.ppTargetCounts[j] = this->invertedMotionSenseDirection[j]
+                                                          ? -targetPositionCounts
+                                                          : targetPositionCounts;
+                        setPoints.ppJointTargetsDeg[j]
                             = this->targetCountsToJointDeg(j, targetPositionCounts);
-                        setPoints.isRelative[j] = false;
+                        setPoints.ppIsRelative[j] = false;
                     }
 
                     rx->TargetPosition = targetPositionCounts;
                 }
+            }
+
+            // ---------- POSITION DIRECT (CSP) ----------
+            if (opMode == VOCAB_CM_POSITION_DIRECT)
+            {
+                if (!posLatched[j])
+                {
+                    const double currentJointDeg = this->variables.jointPositions[j];
+                    const int32_t seedCounts = this->jointDegToTargetCounts(j, currentJointDeg);
+                    setPoints.positionDirectJointTargetsDeg[j] = currentJointDeg;
+                    setPoints.positionDirectTargetCounts[j] = seedCounts;
+                    posLatched[j] = true;
+                }
+
+                const int32_t driveCounts = this->invertedMotionSenseDirection[j]
+                                                ? -setPoints.positionDirectTargetCounts[j]
+                                                : setPoints.positionDirectTargetCounts[j];
+                rx->TargetPosition = driveCounts;
             }
 
             if (opMode == VOCAB_CM_CURRENT)
@@ -3019,15 +3051,6 @@ bool CiA402MotionControl::setControlMode(const int j, const int mode)
         return false;
     }
 
-    if (mode == VOCAB_CM_POSITION_DIRECT)
-    {
-        yCError(CIA402,
-                "%s: control mode %d (POSITION_DIRECT) not supported",
-                Impl::kClassName.data(),
-                mode);
-        return false;
-    }
-
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     m_impl->controlModeState.target[j] = mode;
     if (mode == VOCAB_CM_CURRENT || mode == VOCAB_CM_TORQUE)
@@ -3050,20 +3073,6 @@ bool CiA402MotionControl::setControlModes(const int n, const int* joints, int* m
         yCError(CIA402, "%s: invalid number of joints %d", Impl::kClassName.data(), n);
         return false;
     }
-
-    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
-    for (int k = 0; k < n; ++k)
-    {
-        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
-        {
-            yCError(CIA402,
-                    "%s: control mode %d (POSITION_DIRECT) not supported",
-                    Impl::kClassName.data(),
-                    modes[k]);
-            return false;
-        }
-    }
-
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     for (int k = 0; k < n; ++k)
     {
@@ -3089,20 +3098,6 @@ bool CiA402MotionControl::setControlModes(int* modes)
         yCError(CIA402, "%s: null pointer", Impl::kClassName.data());
         return false;
     }
-
-    // check if one of the modes is VOCAB_CM_POSITION_DIRECT
-    for (int k = 0; k < m_impl->numAxes; ++k)
-    {
-        if (modes[k] == VOCAB_CM_POSITION_DIRECT)
-        {
-            yCError(CIA402,
-                    "%s: control mode %d (POSITION_DIRECT) not supported",
-                    Impl::kClassName.data(),
-                    modes[k]);
-            return false;
-        }
-    }
-
     std::lock_guard<std::mutex> l(m_impl->controlModeState.mutex);
     std::memcpy(m_impl->controlModeState.target.data(), modes, m_impl->numAxes * sizeof(int));
 
@@ -3840,11 +3835,11 @@ bool CiA402MotionControl::positionMove(int j, double refDeg)
     }
 
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
-    m_impl->setPoints.jointPositionsDeg[j] = refDeg;
-    m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refDeg);
-    m_impl->setPoints.isRelative[j] = false;
-    m_impl->setPoints.hasPosSP[j] = true;
-    m_impl->setPoints.pulseHi[j] = true; // schedule rising edge on CW bit4
+    m_impl->setPoints.ppJointTargetsDeg[j] = refDeg;
+    m_impl->setPoints.ppTargetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refDeg);
+    m_impl->setPoints.ppIsRelative[j] = false;
+    m_impl->setPoints.ppHasPosSP[j] = true;
+    m_impl->setPoints.ppPulseHi[j] = true; // schedule rising edge on CW bit4
     return true;
 }
 
@@ -3873,11 +3868,11 @@ bool CiA402MotionControl::positionMove(const double* refsDeg)
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        m_impl->setPoints.jointPositionsDeg[j] = refsDeg[j];
-        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(j, refsDeg[j]);
-        m_impl->setPoints.isRelative[j] = false;
-        m_impl->setPoints.hasPosSP[j] = true;
-        m_impl->setPoints.pulseHi[j] = true;
+        m_impl->setPoints.ppJointTargetsDeg[j] = refsDeg[j];
+        m_impl->setPoints.ppTargetCounts[j] = m_impl->jointDegToTargetCounts(j, refsDeg[j]);
+        m_impl->setPoints.ppIsRelative[j] = false;
+        m_impl->setPoints.ppHasPosSP[j] = true;
+        m_impl->setPoints.ppPulseHi[j] = true;
     }
     return true;
 }
@@ -3909,11 +3904,11 @@ bool CiA402MotionControl::positionMove(const int n, const int* joints, const dou
     for (int k = 0; k < n; ++k)
     {
         const int j = joints[k];
-        m_impl->setPoints.jointPositionsDeg[j] = refsDeg[k];
-        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refsDeg[k]);
-        m_impl->setPoints.isRelative[j] = false;
-        m_impl->setPoints.hasPosSP[j] = true;
-        m_impl->setPoints.pulseHi[j] = true;
+        m_impl->setPoints.ppJointTargetsDeg[j] = refsDeg[k];
+        m_impl->setPoints.ppTargetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), refsDeg[k]);
+        m_impl->setPoints.ppIsRelative[j] = false;
+        m_impl->setPoints.ppHasPosSP[j] = true;
+        m_impl->setPoints.ppPulseHi[j] = true;
     }
     return true;
 }
@@ -3934,11 +3929,11 @@ bool CiA402MotionControl::relativeMove(int j, double deltaDeg)
         }
     }
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
-    m_impl->setPoints.jointPositionsDeg[j] += deltaDeg; // cache last target in deg
-    m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), deltaDeg);
-    m_impl->setPoints.isRelative[j] = true;
-    m_impl->setPoints.hasPosSP[j] = true;
-    m_impl->setPoints.pulseHi[j] = true;
+    m_impl->setPoints.ppJointTargetsDeg[j] += deltaDeg; // cache last target in deg
+    m_impl->setPoints.ppTargetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), deltaDeg);
+    m_impl->setPoints.ppIsRelative[j] = true;
+    m_impl->setPoints.ppHasPosSP[j] = true;
+    m_impl->setPoints.ppPulseHi[j] = true;
     return true;
 }
 
@@ -3955,11 +3950,11 @@ bool CiA402MotionControl::relativeMove(const double* deltasDeg)
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
     for (size_t j = 0; j < m_impl->numAxes; ++j)
     {
-        m_impl->setPoints.jointPositionsDeg[j] += deltasDeg[j];
-        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(j, deltasDeg[j]);
-        m_impl->setPoints.isRelative[j] = true;
-        m_impl->setPoints.hasPosSP[j] = true;
-        m_impl->setPoints.pulseHi[j] = true;
+        m_impl->setPoints.ppJointTargetsDeg[j] += deltasDeg[j];
+        m_impl->setPoints.ppTargetCounts[j] = m_impl->jointDegToTargetCounts(j, deltasDeg[j]);
+        m_impl->setPoints.ppIsRelative[j] = true;
+        m_impl->setPoints.ppHasPosSP[j] = true;
+        m_impl->setPoints.ppPulseHi[j] = true;
     }
     return true;
 }
@@ -3978,11 +3973,12 @@ bool CiA402MotionControl::relativeMove(const int n, const int* joints, const dou
     for (int k = 0; k < n; ++k)
     {
         const int j = joints[k];
-        m_impl->setPoints.jointPositionsDeg[j] += deltasDeg[k];
-        m_impl->setPoints.targetCounts[j] = m_impl->jointDegToTargetCounts(size_t(j), deltasDeg[k]);
-        m_impl->setPoints.isRelative[j] = true;
-        m_impl->setPoints.hasPosSP[j] = true;
-        m_impl->setPoints.pulseHi[j] = true;
+        m_impl->setPoints.ppJointTargetsDeg[j] += deltasDeg[k];
+        m_impl->setPoints.ppTargetCounts[j]
+            = m_impl->jointDegToTargetCounts(size_t(j), deltasDeg[k]);
+        m_impl->setPoints.ppIsRelative[j] = true;
+        m_impl->setPoints.ppHasPosSP[j] = true;
+        m_impl->setPoints.ppPulseHi[j] = true;
     }
     return true;
 }
@@ -4149,7 +4145,7 @@ bool CiA402MotionControl::getTargetPosition(const int j, double* ref)
     }
 
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
-    *ref = m_impl->setPoints.jointPositionsDeg[j];
+    *ref = m_impl->setPoints.ppJointTargetsDeg[j];
     return true;
 }
 
@@ -4162,7 +4158,7 @@ bool CiA402MotionControl::getTargetPositions(double* refs)
     }
 
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
-    std::memcpy(refs, m_impl->setPoints.jointPositionsDeg.data(), m_impl->numAxes * sizeof(double));
+    std::memcpy(refs, m_impl->setPoints.ppJointTargetsDeg.data(), m_impl->numAxes * sizeof(double));
     return true;
 }
 
@@ -4176,7 +4172,186 @@ bool CiA402MotionControl::getTargetPositions(const int n, const int* joints, dou
     std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
     for (int k = 0; k < n; ++k)
     {
-        refs[k] = m_impl->setPoints.jointPositionsDeg[joints[k]];
+        refs[k] = m_impl->setPoints.ppJointTargetsDeg[joints[k]];
+    }
+    return true;
+}
+
+// ---------------- IPositionDirect --------------
+
+bool CiA402MotionControl::setPosition(int j, double refDeg)
+{
+    if (j < 0 || j >= static_cast<int>(m_impl->numAxes))
+    {
+        yCError(CIA402, "%s: setPosition: joint %d out of range", Impl::kClassName.data(), j);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> g(m_impl->controlModeState.mutex);
+        if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION_DIRECT)
+        {
+            yCError(CIA402,
+                    "%s: setPosition rejected: POSITION_DIRECT mode is not active for joint %d",
+                    Impl::kClassName.data(),
+                    j);
+            return false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    m_impl->setPoints.positionDirectJointTargetsDeg[j] = refDeg;
+    m_impl->setPoints.positionDirectTargetCounts[j]
+        = m_impl->jointDegToTargetCounts(static_cast<size_t>(j), refDeg);
+    return true;
+}
+
+bool CiA402MotionControl::setPositions(const double* refs)
+{
+    if (refs == nullptr)
+    {
+        yCError(CIA402, "%s: setPositions: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (size_t j = 0; j < m_impl->numAxes; ++j)
+        {
+            if (m_impl->controlModeState.active[j] != VOCAB_CM_POSITION_DIRECT)
+            {
+                yCError(CIA402,
+                        "%s: setPositions rejected: POSITION_DIRECT mode is not active for joint "
+                        "%zu",
+                        Impl::kClassName.data(),
+                        j);
+                return false;
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (size_t j = 0; j < m_impl->numAxes; ++j)
+    {
+        m_impl->setPoints.positionDirectJointTargetsDeg[j] = refs[j];
+        m_impl->setPoints.positionDirectTargetCounts[j]
+            = m_impl->jointDegToTargetCounts(j, refs[j]);
+    }
+    return true;
+}
+
+bool CiA402MotionControl::setPositions(const int n_joint, const int* joints, const double* refs)
+{
+    if (!joints || !refs)
+    {
+        yCError(CIA402, "%s: setPositions: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yCError(CIA402,
+                "%s: setPositions: invalid number of joints %d",
+                Impl::kClassName.data(),
+                n_joint);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->controlModeState.mutex);
+        for (int k = 0; k < n_joint; ++k)
+        {
+            if (joints[k] < 0 || joints[k] >= static_cast<int>(m_impl->numAxes))
+            {
+                yCError(CIA402,
+                        "%s: setPositions: joint %d out of range",
+                        Impl::kClassName.data(),
+                        joints[k]);
+                return false;
+            }
+            if (m_impl->controlModeState.active[joints[k]] != VOCAB_CM_POSITION_DIRECT)
+            {
+                yCError(CIA402,
+                        "%s: setPositions rejected: POSITION_DIRECT mode is not active for joint "
+                        "%d",
+                        Impl::kClassName.data(),
+                        joints[k]);
+                return false;
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n_joint; ++k)
+    {
+        const int j = joints[k];
+        m_impl->setPoints.positionDirectJointTargetsDeg[j] = refs[k];
+        m_impl->setPoints.positionDirectTargetCounts[j]
+            = m_impl->jointDegToTargetCounts(static_cast<size_t>(j), refs[k]);
+    }
+    return true;
+}
+
+bool CiA402MotionControl::getRefPosition(const int joint, double* ref)
+{
+    if (!ref)
+    {
+        yCError(CIA402, "%s: getRefPosition: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (joint < 0 || joint >= static_cast<int>(m_impl->numAxes))
+    {
+        yCError(CIA402, "%s: getRefPosition: joint %d out of range", Impl::kClassName.data(), joint);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    *ref = m_impl->setPoints.positionDirectJointTargetsDeg[joint];
+    return true;
+}
+
+bool CiA402MotionControl::getRefPositions(double* refs)
+{
+    if (!refs)
+    {
+        yCError(CIA402, "%s: getRefPositions: null pointer", Impl::kClassName.data());
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    std::memcpy(refs,
+                m_impl->setPoints.positionDirectJointTargetsDeg.data(),
+                m_impl->numAxes * sizeof(double));
+    return true;
+}
+
+bool CiA402MotionControl::getRefPositions(const int n_joint, const int* joints, double* refs)
+{
+    if (!joints || !refs)
+    {
+        yCError(CIA402, "%s: getRefPositions: null pointer", Impl::kClassName.data());
+        return false;
+    }
+    if (n_joint <= 0)
+    {
+        yCError(CIA402,
+                "%s: getRefPositions: invalid number of joints %d",
+                Impl::kClassName.data(),
+                n_joint);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->setPoints.mutex);
+    for (int k = 0; k < n_joint; ++k)
+    {
+        if (joints[k] < 0 || joints[k] >= static_cast<int>(m_impl->numAxes))
+        {
+            yCError(CIA402,
+                    "%s: getRefPositions: joint %d out of range",
+                    Impl::kClassName.data(),
+                    joints[k]);
+            return false;
+        }
+        refs[k] = m_impl->setPoints.positionDirectJointTargetsDeg[joints[k]];
     }
     return true;
 }
