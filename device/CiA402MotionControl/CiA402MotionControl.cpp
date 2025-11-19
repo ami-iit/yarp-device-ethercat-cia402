@@ -683,26 +683,31 @@ struct CiA402MotionControl::Impl
             const double kpDevice = kpMotor_mNm_per_deg * countsPerDeg;
             const double kdDevice = kdMotor_mNmS_per_deg * countsPerDeg;
 
-            const float kpValue = static_cast<float>(kpDevice);
-            const float kdValue = static_cast<float>(kdDevice);
-            constexpr float kiValue = 0.0f;
+            const float32 kpValue = static_cast<float32>(kpDevice);
+            const float32 kdValue = static_cast<float32>(kdDevice);
+            constexpr float32 kiValue = 0.0f;
 
             const int slaveIdx = firstSlave + static_cast<int>(j);
-            const auto errKp = ethercatManager.writeSDO<float>(slaveIdx, 0x2012, 0x01, kpValue);
-            const auto errKi = ethercatManager.writeSDO<float>(slaveIdx, 0x2012, 0x02, kiValue);
-            const auto errKd = ethercatManager.writeSDO<float>(slaveIdx, 0x2012, 0x03, kdValue);
+            const auto errKp = ethercatManager.writeSDO<float32>(slaveIdx, 0x2012, 0x01, kpValue);
+            const auto errKi = ethercatManager.writeSDO<float32>(slaveIdx, 0x2012, 0x02, kiValue);
+            const auto errKd = ethercatManager.writeSDO<float32>(slaveIdx, 0x2012, 0x03, kdValue);
 
             if (errKp != ::CiA402::EthercatManager::Error::NoError
                 || errKi != ::CiA402::EthercatManager::Error::NoError
                 || errKd != ::CiA402::EthercatManager::Error::NoError)
             {
                 yCError(CIA402,
-                        "%s j=%zu failed to program gains (errs=%d,%d,%d)",
+                        "%s j=%zu failed to program gains (errs=%d,%d,%d). Gains "
+                        "Kp=%.3f[mNm/inc]=%.3f[Nm/deg], Kd=%.3f[mNm*s/inc]=%.3f[Nm*s/deg]",
                         logPrefix,
                         j,
                         static_cast<int>(errKp),
                         static_cast<int>(errKi),
-                        static_cast<int>(errKd));
+                        static_cast<int>(errKd),
+                        kpValue,
+                        kpNmPerDeg[j],
+                        kdValue,
+                        kdNmSecPerDeg[j]);
                 return false;
             }
 
@@ -2000,9 +2005,7 @@ bool CiA402MotionControl::open(yarp::os::Searchable& cfg)
     }
     if (programSimplePidGains)
     {
-        if (!extractListOfDoubleFromSearchable(cfg,
-                                               "simple_pid_kp_nm_per_deg",
-                                               simplePidKpNmPerDeg))
+        if (!extractListOfDoubleFromSearchable(cfg, "simple_pid_kp_nm_per_deg", simplePidKpNmPerDeg))
             return false;
         if (!extractListOfDoubleFromSearchable(cfg,
                                                "simple_pid_kd_nm_s_per_deg",
