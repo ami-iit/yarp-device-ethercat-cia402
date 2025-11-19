@@ -42,7 +42,11 @@ Notes:
 
 | Name                          | Index:Sub | Type    | Dir.  | Purpose                             | Values/Notes               |
 |-------------------------------|-----------|---------|-------|-------------------------------------|----------------------------|
+| Position control strategy     | 0x2002:00 | UINT16  | Write | Selects position control mode       | `1` = simple PID           |
 | Position loop source (vendor) | 0x2012:09 | UINT8   | Read  | Which encoder feeds position loop   | 1=Enc1, 2=Enc2             |
+| Simple PID Kp                 | 0x2012:01 | REAL32  | Write | Position P gain                     | Config in Nm/deg → mNm/inc |
+| Simple PID Ki                 | 0x2012:02 | REAL32  | Write | Position I gain                     | Forced to `0.0`            |
+| Simple PID Kd                 | 0x2012:03 | REAL32  | Write | Position D gain                     | Config in Nm*s/deg → mNm*s/inc |
 | Velocity loop source (vendor) | 0x2011:05 | UINT8   | Read  | Which encoder feeds velocity loop   | 1=Enc1, 2=Enc2             |
 | Gear ratio numerator          | 0x6091:01 | UINT32  | Read  | Motor:Load gear ratio (numerator)   | Defaults to 1               |
 | Gear ratio denominator        | 0x6091:02 | UINT32  | Read  | Motor:Load gear ratio (denominator) | Defaults to 1               |
@@ -64,6 +68,8 @@ Notes:
 | rpm → deg/s         | deg/s = rpm × 360 / 60                  |
 | joint ↔ motor shaft | apply gear ratio and mounting sign      |
 | Nm → 0x6071         | (motorNm / ratedNm) × 1000 (clamped)    |
+| Kp cfg → drive      | Kp[mNm/inc] = (Kp_cfg[Nm/deg] / gearRatio) × 1000 × counts_per_deg |
+| Kd cfg → drive      | Kd[mNm*s/inc] = (Kd_cfg[Nm*s/deg] / gearRatio) × 1000 × counts_per_deg |
 
 See dual_encoder_handling.md for encoder CPR, mounting, and shaft transforms.
 

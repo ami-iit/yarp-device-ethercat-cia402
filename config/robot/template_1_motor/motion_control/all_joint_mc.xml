@@ -16,9 +16,12 @@ BSD-3-Clause license. -->
     <param name="velocity_feedback_motor"> ( "606C" )</param>    
     <param name="position_feedback_joint"> ( "6064" )</param>
     <param name="velocity_feedback_joint"> ( "606C" )</param>
+    <!-- Example simple PID gains provided in joint Nm/deg and Nm*s/deg -->
+    <param name="simple_pid_kp_nm_per_deg"> ( 0.6981 )</param>
+    <param name="simple_pid_kd_nm_s_per_deg"> ( 0.01745 )</param>
     <param name="position_window_deg"> ( 0.1 )</param>
     <param name="timing_window_ms"> ( 100 )</param>
     <param name="pos_limit_min_deg">               (        -23.0       )</param>
     <param name="pos_limit_max_deg">               (         23.0       )</param>
-    <param name="use_position_limits_from_config"> (         false      )</param>
+    <param name="use_position_limits_from_config"> (         true      )</param>
 </device>
