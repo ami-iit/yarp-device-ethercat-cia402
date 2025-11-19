@@ -18,6 +18,7 @@
 #include <yarp/dev/IMotor.h>
 #include <yarp/dev/IMotorEncoders.h>
 #include <yarp/dev/IPositionControl.h>
+#include <yarp/dev/IPositionDirect.h>
 #include <yarp/dev/ITorqueControl.h>
 #include <yarp/dev/IVelocityControl.h>
 #include <yarp/os/PeriodicThread.h>
@@ -41,6 +42,7 @@ class CiA402MotionControl : public yarp::dev::DeviceDriver,
                             public yarp::dev::ITorqueControl,
                             public yarp::dev::IVelocityControl,
                             public yarp::dev::IPositionControl,
+                            public yarp::dev::IPositionDirect,
                             public yarp::dev::ICurrentControl,
                             public yarp::dev::IJointFault,
                             public yarp::dev::IMotor,
@@ -940,6 +942,82 @@ public:
      * @note This function does not read the actual current positions.
      */
     bool getTargetPositions(const int n_joint, const int* joints, double* refs) override;
+
+    // ---------------- IPositionDirect --------------
+
+    /**
+     * @brief Streams a single joint reference in Cyclic Synchronous Position mode.
+     *
+     * Sends an immediate target position for the selected joint using the
+     * IPositionDirect interface. The reference is expressed in joint units and is
+     * consumed on the next PDO cycle while the joint is in VOCAB_CM_POSITION_DIRECT.
+     *
+     * @param j Index of the joint to command (0-based).
+     * @param ref Absolute position target in joint coordinates.
+     * @return true if the reference was accepted, false otherwise.
+     */
+    bool setPosition(int j, double ref) override;
+
+    /**
+     * @brief Streams references for a subset of joints.
+     *
+     * Allows updating multiple joints at once while leaving others untouched. Each
+     * joint listed in @p joints receives the corresponding value in @p refs during
+     * the next EtherCAT cycle.
+     *
+     * @param n_joint Number of joints to update.
+     * @param joints Array of joint indices to command (size = n_joint).
+     * @param refs Array of absolute position targets (size = n_joint).
+     * @return true if all references were queued, false otherwise.
+     */
+    bool setPositions(const int n_joint, const int* joints, const double* refs) override;
+
+    /**
+     * @brief Streams references for every configured joint.
+     *
+     * Writes a full vector of position targets that will be consumed in the next
+     * PDO exchange. All joints must already be in position-direct control mode.
+     *
+     * @param refs Array of absolute position targets for all joints.
+     * @return true if the reference vector was queued, false otherwise.
+     */
+    bool setPositions(const double* refs) override;
+
+    /**
+     * @brief Returns the most recent position-direct command for a joint.
+     *
+     * Mirrors the last value pushed via setPosition* APIs, ignoring commands sent
+     * through IPositionControl or other interfaces.
+     *
+     * @param joint Index of the joint.
+     * @param ref Pointer to store the last position-direct reference.
+     * @return true if a cached value is available, false otherwise.
+     */
+    bool getRefPosition(const int joint, double* ref) override;
+
+    /**
+     * @brief Returns the position-direct references for all joints.
+     *
+     * Copies the cached values last sent with setPositions(const double*). Values
+     * produced by other motion interfaces are intentionally ignored.
+     *
+     * @param refs Array to store the last position-direct references for all joints.
+     * @return true if all cached values were retrieved, false otherwise.
+     */
+    bool getRefPositions(double* refs) override;
+
+    /**
+     * @brief Returns the position-direct references for a subset of joints.
+     *
+     * Fills @p refs with the cached values previously streamed for the provided
+     * joint indices.
+     *
+     * @param n_joint Number of joints to query.
+     * @param joints Array of joint indices (size = n_joint).
+     * @param refs Array to store the corresponding cached references.
+     * @return true if all requested values were available, false otherwise.
+     */
+    bool getRefPositions(const int n_joint, const int* joints, double* refs) override;
 
     // ---------------- ICurrentControl --------------
     /**
