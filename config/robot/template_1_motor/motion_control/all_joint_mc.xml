@@ -16,6 +16,9 @@ BSD-3-Clause license. -->
     <param name="velocity_feedback_motor"> ( "606C" )</param>    
     <param name="position_feedback_joint"> ( "6064" )</param>
     <param name="velocity_feedback_joint"> ( "606C" )</param>
+    <!-- Optional: enable low-pass filtering on velocity feedback -->
+    <param name="velocity_filter_enable">( false )</param>
+    <param name="velocity_filter_cutoff_hz">( 500 )</param>
     <param name="position_window_deg"> ( 0.1 )</param>
     <param name="timing_window_ms"> ( 100 )</param>
     <param name="pos_limit_min_deg">               (        -23.0       )</param>
