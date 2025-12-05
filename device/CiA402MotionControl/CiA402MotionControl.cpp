@@ -951,13 +951,25 @@ struct CiA402MotionControl::Impl
                                                         ? -seedStoreCounts
                                                         : seedStoreCounts;
 
-                    // sync drive position (0x6064) to current position
-                    rx->TargetPosition = seedDriveCounts;
+                    // If the user already queued a PP target before the first cycle in PP, do
+                    // not overwrite it with the seed; otherwise seed the cached target with the
+                    // current position so the drive starts from a consistent reference.
+                    if (!setPoints.ppHasPosSP[j])
+                    {
+                        setPoints.ppTargetCounts[j] = seedStoreCounts;
+                        setPoints.ppJointTargetsDeg[j] = currentJointDeg;
+                        setPoints.ppIsRelative[j] = false;
+                    }
 
-                    setPoints.ppTargetCounts[j] = seedStoreCounts;
-                    setPoints.ppJointTargetsDeg[j] = currentJointDeg;
-                    setPoints.ppIsRelative[j] = false;
+                    // Populate 0x607A with the cached target (seeded or user provided). The
+                    // rising edge on bit4 will be generated in the next cycle.
+                    const int32_t driveTargetCounts = this->invertedMotionSenseDirection[j]
+                                                          ? -setPoints.ppTargetCounts[j]
+                                                          : setPoints.ppTargetCounts[j];
+                    rx->TargetPosition = driveTargetCounts;
 
+                    // If no user set-point was pending, schedule a one-shot bit4 pulse to align
+                    // the drive target to the current position.
                     if (!setPoints.ppHasPosSP[j] && !setPoints.ppPulseHi[j])
                     {
                         setPoints.ppPulseHi[j] = true; // sync drive target to current position
