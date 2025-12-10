@@ -125,6 +125,10 @@ public:
         }
 
         const auto& fi = it->second;
+        if (fi.bitSize % 8 != 0 || fi.bitSize == 0)
+        {
+            return fallback;
+        }
         const std::size_t byteSize = fi.bitSize / 8;
         if (byteSize != sizeof(T) || byteSize == 0)
         {
