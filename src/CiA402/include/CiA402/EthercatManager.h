@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -109,36 +110,30 @@ public:
     /**
      * @brief Read a field from the TxPDO image with a typed accessor.
      *
-     * Only 8/16/32-bit integral types are supported. If the field is not
-     * present in the mapping, the provided fallback is returned.
+     * Supports any trivially copyable type whose size matches the mapped field
+     * (commonly 8/16/32-bit integers or IEEE-754 REALs coming from the drive).
+     * If the field is not present or the size does not match, the fallback is returned.
      */
     template <typename T> T get(TxField f, T fallback = {}) const
     {
+        static_assert(std::is_trivially_copyable_v<T>, "TxView::get requires trivially copyable T");
+
         auto it = m_map->find(f);
         if (it == m_map->end())
         {
             return fallback;
         }
+
         const auto& fi = it->second;
-        const uint8_t* p = m_base + fi.byteOffset;
-        if constexpr (sizeof(T) == 1)
+        const std::size_t byteSize = fi.bitSize / 8;
+        if (byteSize != sizeof(T) || byteSize == 0)
         {
-            return *reinterpret_cast<const T*>(p);
-        } else if constexpr (sizeof(T) == 2)
-        {
-            int16_t v;
-            std::memcpy(&v, p, 2);
-            return static_cast<T>(v);
-        } else if constexpr (sizeof(T) == 4)
-        {
-            int32_t v;
-            std::memcpy(&v, p, 4);
-            return static_cast<T>(v);
-        } else
-        {
-            static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4, "Unsupported size");
+            return fallback;
         }
-        return fallback;
+
+        T value{};
+        std::memcpy(&value, m_base + fi.byteOffset, byteSize);
+        return value;
     }
 
 private:
