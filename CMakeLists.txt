@@ -10,6 +10,8 @@ project(
 )
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE) # to avoid the use of $ORIGIN in RPATH
+
 #set default build type to "Release" in single-config generators
 if(NOT CMAKE_CONFIGURATION_TYPES)
     if(NOT CMAKE_BUILD_TYPE)
@@ -63,9 +65,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 # Find YARP and include the CMake code to compile plugins
 find_package(YARP REQUIRED)
+# list(APPEND CMAKE_PREFIX_PATH "/home/sdeore/dev/cpp/SOEM/install")
 find_package(soem REQUIRED)
 
-# macro to automatize the process of creating a YARP device
+# macro to automatize the   process of creating a YARP device
 include(AddLibrary)
 include(AddYARPDevice)
 include(AddApplication)

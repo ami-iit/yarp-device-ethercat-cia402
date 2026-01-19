@@ -46,7 +46,7 @@ Ensure the following dependencies are installed:
 
 After building the project, the plugin can be loaded into a YARP-based application. Make sure the `YARP_DATA_DIRS` environment variable includes the path to the plugin's configuration files:
 ```bash
-export YARP_DATA_DIRS=/path/to/install:$YARP_DATA_DIRS
+export YARP_DATA_DIRS=/path/to/install/share/yarp:$YARP_DATA_DIRS
 ```
 
 ### Configuration ⚙️

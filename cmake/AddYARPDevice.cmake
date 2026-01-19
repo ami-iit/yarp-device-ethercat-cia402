@@ -31,6 +31,7 @@ function(add_yarp_device)
 
   set(YARP_FORCE_DYNAMIC_PLUGINS ON)
   # Warning: the <package> option of yarp_configure_plugins_installation should be different from the plugin name
+  message(STATUS "Installing device ${name} for export ${PROJECT_NAME} with package name ${ini_package}.")
   yarp_configure_plugins_installation(${ini_package})
 
   yarp_prepare_plugin(${name} CATEGORY device
