@@ -65,10 +65,9 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 # Find YARP and include the CMake code to compile plugins
 find_package(YARP REQUIRED)
-# list(APPEND CMAKE_PREFIX_PATH "/home/sdeore/dev/cpp/SOEM/install")
 find_package(soem REQUIRED)
 
-# macro to automatize the   process of creating a YARP device
+# macro to automatize the process of creating a YARP device
 include(AddLibrary)
 include(AddYARPDevice)
 include(AddApplication)
