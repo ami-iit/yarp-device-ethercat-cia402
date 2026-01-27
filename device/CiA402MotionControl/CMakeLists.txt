@@ -11,4 +11,4 @@ add_yarp_device(
       YARP::YARP_os
       YARP::YARP_dev
       YarpCiA402::EthercatManager
-    CONFIGURE_PACKAGE_NAME CiA402MotionControl)
+    CONFIGURE_PACKAGE_NAME CiA402MotionControlPlugins)
